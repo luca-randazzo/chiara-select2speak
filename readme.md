@@ -1,5 +1,5 @@
 # Metadata
-Name:	ChiaraSelect2Speak
+Name:	chiara-select2read
 
 Author: Luca Randazzo
 
@@ -9,13 +9,13 @@ email:  hackahealth.geneva@gmail.com
 
 # Information
 ## Description
-"ChiaraSelect2Speak" is an Android accessibility service that allows to read aloud text displayed on the screen, to ease access for users with reading difficulties.
+"chiara-select2read" is an Android accessibility service that allows to read aloud text displayed on the screen, to ease access for users with reading difficulties.
 
 When active, the service overlays on top of any visible content on the screen, allowing users to select an area on the screen and to read aloud the text inside it.
 
-This service is inspired by the super cool "Android Select to Speak" (https://support.google.com/accessibility/android/answer/7349565?hl=en), and builds some cool functionalities on top of it. "ChiaraSelect2Speak" enables indeed to recognize and read aloud also text that is not directly exposed to the Android operating system (e.g. text inside apps, images, and videogames) - where this text is not accessible by the "Android Select to Speak" service.
+This service is inspired by the super cool "Android Select to Speak" (https://support.google.com/accessibility/android/answer/7349565?hl=en), and builds some cool functionalities on top of it. "chiara-select2read" enables indeed to recognize and read aloud also text that is not directly exposed to the Android operating system (e.g. text inside apps, images, and videogames) - where this text is not accessible by the "Android Select to Speak" service.
 
-The project is hosted here: https://github.com/HackaHealth-Geneva/ChiaraSelect2Speak
+The project is hosted here: https://github.com/HackaHealth-Geneva/chiara-select2read
 
 ## Inspiration
 I developed this service to enable my sister, Chiara, to independently play with her favourite videogames - without the need of asking help to read the text to anyone :)
