@@ -5,8 +5,6 @@ Author: Luca Randazzo
 
 Date:   July 2020
 
-email:  hackahealth.geneva@gmail.com
-
 # Information
 ## Description
 "chiara-select2read" is an Android accessibility service that allows to read aloud text displayed on the screen, to ease access for users with reading difficulties.
