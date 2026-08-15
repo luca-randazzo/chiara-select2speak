@@ -44,9 +44,10 @@ The "Android Select to Speak" service implements these features.
 
 ## UI
 - The UI button ("Start") should be movable by the user around the screen, to avoid covering potential areas of interest
-- The UI should enable to stop the TTS-engine (e.g. if a very large section of text has been selected, which is not of interest any longer)
-- Highlight word by word as they're being spoken out loud
-- Add features to pause/repeat audio
+- The UI should enable to stop the TTS-engine (e.g. if a very large section of text has been selected by error or it is not any longer of interest)
+- If the text is being read, the "Start" button should show progress
+- Highlight word by word as they're being read-aloud
+- Add features to pause/repeat
 
 The "Android Select to Speak" service implements these features.
 
