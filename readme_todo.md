@@ -1,23 +1,7 @@
-# Prioritized
-✓ Once this service is installed, an app shall be created among the Android apps. If clicked, it shall lead to the settings of the service.
-✓ Add a direct link to the Android accessibility settings where the service must be enabled
-✓ The main UI button ("Start") should be transformed into a play button, without any text
-✓ Once the text2speech engine finishes readign aloud, the button shall return to its original color
-✓ The main UI button should be movable by the user around the screen, to avoid covering potential areas of interest
-
-✓ If the text2speech engine is reading, and the user clicks anywhere else on the screen than the UI buttons, the text2speech engine shall stop reading aloud
-
-- The UI shall highlight word by word (e.g. through a yellow oval) as they're being read-aloud by the text2speech engine 
-
+# Backlog
+## UI 
 - Once the UI button is pressed, it shall transform into a pause button
 -- If the user presses pause, the text2speech engine shall pause, the button shall transform into play, if the user presses on it, the text2speech engine shall restart reading from where it left off
-
-
-# Backlog
-
-## UI 
-- Once the UI button is pressed, a new button shall appear: rewind
--- If the user presses rewind, the text2speech engine shall restart reading from the beginning
 
 ## OCR
 - Speaking-out-loud of text around a clicked point (instead of requiring users to create a selection rectangle)
@@ -32,3 +16,16 @@ The "Android Select to Speak" service implements these features.
 
 ## Goodies
 - Select welcome message by TTS-engine
+
+# Prioritized
+- Once the UI button is pressed, a new button shall appear: rewind
+-- If the user presses rewind, the text2speech engine shall restart reading from the beginning
+
+# Done
+✓ Once this service is installed, an app shall be created among the Android apps. If clicked, it shall lead to the settings of service
+✓ Add a direct link to the Android accessibility settings where the service must be enabled
+✓ The main UI button ("Start") should be transformed into a play button, without any text
+✓ Once the text2speech engine finishes readign aloud, the button shall return to its original color
+✓ The main UI button should be movable by the user around the screen, to avoid covering potential areas of interest
+✓ If text2speech engine is reading, and user clicks anywhere on the screen than the UI button, text2speech engine shall stop reading
+✓ The UI shall highlight word by word (e.g. through a yellow oval) as they're being read-aloud by the text2speech engine 

@@ -24,6 +24,7 @@
         "chiara-select2speak" is specifically developed to enable recognizing (and reading-aloud) also such text.
     </string>
     <string name="start">Start</string>
+    <string name="replay">Replay last text</string>
     <string name="stop">Stop</string>
 
     <string name="screenshot_service_title">Chiara Screenshot Service</string>

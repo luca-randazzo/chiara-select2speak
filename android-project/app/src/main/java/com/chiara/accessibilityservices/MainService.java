@@ -83,6 +83,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     // service status variables
     private boolean service_active = false;
     private boolean speech_active = false;
+    private boolean replaying_speech = false;
     private boolean first_setup = true;
 
     // service path
@@ -119,7 +120,10 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     private TextToSpeech tts;
     boolean remove_newlines = true;
     private final Map<String, List<SpokenWord>> spokenWords = new HashMap<>();
+    private final Map<String, Integer> utteranceSessions = new HashMap<>();
+    private final List<ReplayItem> lastSpokenItems = new ArrayList<>();
     private int utteranceCounter = 0;
+    private int speechSession = 0;
     private Paint highlightPaint;
 
     // MyLog class
@@ -255,7 +259,13 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                         @Override
                         public void onStart(String utteranceId) {
-                            new Handler(Looper.getMainLooper()).post(() -> setButtonSpeaking(true));
+                            new Handler(Looper.getMainLooper()).post(() -> {
+                                if (utteranceId.startsWith("ocr-replay-")) {
+                                    setReplayButtonSpeaking(true);
+                                } else {
+                                    setButtonSpeaking(true);
+                                }
+                            });
                         }
 
                         @Override
@@ -274,15 +284,22 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                         @Override
                         public void onDone(String utteranceId) {
                             new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                                if (tts != null && !tts.isSpeaking()) {
-                                    finishSpeechOverlay();
+                                Integer session = utteranceSessions.get(utteranceId);
+                                if (session != null && session == speechSession &&
+                                        tts != null && !tts.isSpeaking()) {
+                                    finishSpeechOverlay(true);
                                 }
                             }, 100);
                         }
 
                         @Override
                         public void onError(String utteranceId) {
-                            new Handler(Looper.getMainLooper()).post(() -> finishSpeechOverlay());
+                            new Handler(Looper.getMainLooper()).post(() -> {
+                                Integer session = utteranceSessions.get(utteranceId);
+                                if (session != null && session == speechSession) {
+                                    finishSpeechOverlay(false);
+                                }
+                            });
                         }
                     });
                 }
@@ -369,6 +386,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
     private void configureButtons() {
         final ImageButton button_start = (ImageButton) mLayout.findViewById(R.id.start);
+        final ImageButton button_replay = (ImageButton) mLayout.findViewById(R.id.replay);
         final Button button_stop    = (Button) mLayout.findViewById(R.id.stop);
 
         button_start.setOnClickListener(new View.OnClickListener() {
@@ -377,9 +395,17 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 Log.i(DEBUG_TAG, "[configureButtons::button_start::onClick] Pressed 'Start'");
                 my_log.i(DEBUG_TAG, "[configureButtons::button_start::onClick] Pressed 'Start'");
 
+                button_replay.setVisibility(View.GONE);
                 latest_screenshot_bitmap = null; // Clear previous
                 deletePNGFilesInFolder(PATH);
                 takeScreenshot();
+            }
+        });
+
+        button_replay.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                replayLastSpeech();
             }
         });
 
@@ -390,6 +416,44 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
                 WindowManager.LayoutParams params = (WindowManager.LayoutParams) mLayout.getLayoutParams();
 
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        initialX = params.x;
+                        initialY = params.y;
+                        initialTouchX = event.getRawX();
+                        initialTouchY = event.getRawY();
+                        buttonMoved = false;
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        if (Math.abs(event.getRawX() - initialTouchX) >= 10 ||
+                                Math.abs(event.getRawY() - initialTouchY) >= 10) {
+                            buttonMoved = true;
+                        }
+                        params.x = initialX + (int) (event.getRawX() - initialTouchX);
+                        params.y = initialY + (int) (event.getRawY() - initialTouchY);
+                        lastX = params.x;
+                        lastY = params.y;
+                        WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                        wm.updateViewLayout(mLayout, params);
+                        return true;
+
+                    case MotionEvent.ACTION_UP:
+                        if (!buttonMoved) {
+                            v.performClick();
+                        }
+                        return true;
+                }
+                return false;
+            }
+        });
+
+        button_replay.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (service_active) return false;
+
+                WindowManager.LayoutParams params = (WindowManager.LayoutParams) mLayout.getLayoutParams();
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
                         initialX = params.x;
@@ -471,6 +535,15 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         }
     }
 
+    private void setReplayButtonSpeaking(boolean speaking) {
+        if (mLayout == null) return;
+        final ImageButton button_replay = (ImageButton) mLayout.findViewById(R.id.replay);
+        if (button_replay == null) return;
+
+        int color = speaking ? R.color.colorAccent : R.color.button_bg_inactive;
+        button_replay.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, color)));
+    }
+
     @Override public void onAccessibilityEvent(AccessibilityEvent event) { }
 
     @Override public void onInterrupt() { }
@@ -479,7 +552,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         if (speech_active) {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 tts.stop();
-                finishSpeechOverlay();
+                finishSpeechOverlay(false);
             }
             return true;
         }
@@ -488,13 +561,41 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         return true; // Consume the event when active
     }
 
-    private void finishSpeechOverlay() {
+    private void finishSpeechOverlay(boolean showReplay) {
         speech_active = false;
         spokenWords.clear();
+        utteranceSessions.clear();
         setButtonSpeaking(false);
+        setReplayButtonSpeaking(false);
+        ImageButton button_replay = mLayout == null ? null : mLayout.findViewById(R.id.replay);
+        if (button_replay != null && showReplay && !lastSpokenItems.isEmpty()) {
+            button_replay.setVisibility(View.VISIBLE);
+        }
         if (mLayout != null && !first_setup) {
-            setOverlayProperties(false);
+            if (!replaying_speech) {
+                setOverlayProperties(false);
+            }
             image_view.setVisibility(View.GONE);
+        }
+        replaying_speech = false;
+    }
+
+    private void replayLastSpeech() {
+        if (tts == null || lastSpokenItems.isEmpty()) return;
+
+        tts.stop();
+        spokenWords.clear();
+        utteranceSessions.clear();
+        speech_active = true;
+        replaying_speech = true;
+        speechSession++;
+        setReplayButtonSpeaking(true);
+
+        for (ReplayItem item : lastSpokenItems) {
+            String utteranceId = "ocr-replay-" + utteranceCounter++;
+            spokenWords.put(utteranceId, item.words);
+            utteranceSessions.put(utteranceId, speechSession);
+            tts.speak(item.text, TextToSpeech.QUEUE_ADD, null, utteranceId);
         }
     }
 
@@ -547,8 +648,9 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             }
         }
         else {
-            lp.width    = WindowManager.LayoutParams.WRAP_CONTENT;
-            lp.height   = WindowManager.LayoutParams.WRAP_CONTENT;
+            float density = getResources().getDisplayMetrics().density;
+            lp.width    = (int) (120 * density);
+            lp.height   = (int) (110 * density);
             lp.x = lastX;
             lp.y = lastY;
             if (button_start != null) {
@@ -595,6 +697,8 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     y1 = current_y;
                     drawRectangle();
                     speech_active = true;
+                    replaying_speech = false;
+                    speechSession++;
 
                     if (latest_screenshot_bitmap != null) {
                         try {
@@ -753,6 +857,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         SparseArray<TextBlock> text = text_recognizer.detect(screenshot_frame);
 
         if (text.size() > 0) {
+            lastSpokenItems.clear();
             for (int i=0; i<text.size(); ++i) {
                 TextBlock item = text.valueAt(i);
                 if  (item != null && item.getValue() != null) {
@@ -765,6 +870,8 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     if (!words.isEmpty()) {
                         spokenWords.put(utteranceId, words);
                     }
+                    utteranceSessions.put(utteranceId, speechSession);
+                    lastSpokenItems.add(new ReplayItem(current_string, words));
                     tts.speak(current_string, TextToSpeech.QUEUE_ADD, null, utteranceId);
                     Log.i(DEBUG_TAG, "[bitmapToSpeech] Text: " + current_string);
                 }
@@ -824,6 +931,16 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             this.start = start;
             this.end = end;
             this.bounds = bounds;
+        }
+    }
+
+    private static class ReplayItem {
+        final String text;
+        final List<SpokenWord> words;
+
+        ReplayItem(String text, List<SpokenWord> words) {
+            this.text = text;
+            this.words = words;
         }
     }
 }
