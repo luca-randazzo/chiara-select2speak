@@ -28,6 +28,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
+import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -60,7 +61,11 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 
 /* This service provides an entry point to the Chiara_Select2Speak service. */
@@ -113,6 +118,9 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     // TextToSpeech engine
     private TextToSpeech tts;
     boolean remove_newlines = true;
+    private final Map<String, List<SpokenWord>> spokenWords = new HashMap<>();
+    private int utteranceCounter = 0;
+    private Paint highlightPaint;
 
     // MyLog class
     MyLog my_log;
@@ -251,6 +259,19 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                         }
 
                         @Override
+                        public void onRangeStart(String utteranceId, int start, int end, int frame) {
+                            List<SpokenWord> words = spokenWords.get(utteranceId);
+                            if (words == null) return;
+
+                            for (SpokenWord word : words) {
+                                if (start < word.end && end > word.start) {
+                                    new Handler(Looper.getMainLooper()).post(() -> drawSpokenWord(word.bounds));
+                                    return;
+                                }
+                            }
+                        }
+
+                        @Override
                         public void onDone(String utteranceId) {
                             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                                 if (tts != null && !tts.isSpeaking()) {
@@ -333,6 +354,10 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setColor(ContextCompat.getColor(this, R.color.selection_rect));
                 paint.setStrokeWidth(10);
+
+                highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                highlightPaint.setStyle(Paint.Style.FILL);
+                highlightPaint.setColor(Color.argb(160, 255, 214, 0));
             });
         } else {
             Log.e(DEBUG_TAG, "Failed to load screenshot even after signal");
@@ -465,6 +490,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
     private void finishSpeechOverlay() {
         speech_active = false;
+        spokenWords.clear();
         setButtonSpeaking(false);
         if (mLayout != null && !first_setup) {
             setOverlayProperties(false);
@@ -496,6 +522,14 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         }
         else {
             lp = (WindowManager.LayoutParams) mLayout.getLayoutParams();
+            if (lp.width == WindowManager.LayoutParams.MATCH_PARENT && button_start != null) {
+                lastX = buttonParams.leftMargin - buttonMarginX;
+                lastY = buttonParams.topMargin - buttonMarginY;
+            }
+            else {
+                lastX = lp.x;
+                lastY = lp.y;
+            }
         }
 
         if (fullscreen) {
@@ -723,7 +757,12 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     if (remove_newlines) {
                         current_string = current_string.replace("\n", " ");
                     }
-                    tts.speak(current_string, TextToSpeech.QUEUE_ADD, null, "DEFAULT");
+                    String utteranceId = "ocr-" + utteranceCounter++;
+                    List<SpokenWord> words = getSpokenWords(item, current_string);
+                    if (!words.isEmpty()) {
+                        spokenWords.put(utteranceId, words);
+                    }
+                    tts.speak(current_string, TextToSpeech.QUEUE_ADD, null, utteranceId);
                     Log.i(DEBUG_TAG, "[bitmapToSpeech] Text: " + current_string);
                 }
             }
@@ -741,6 +780,48 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         canvasDrawingPane.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
         canvasDrawingPane.drawRoundRect(x0, y0, current_x, current_y, 25, 25, paint);
         image_view.invalidate();
+    }
+
+    private List<SpokenWord> getSpokenWords(TextBlock block, String text) {
+        List<SpokenWord> words = new ArrayList<>();
+        int searchStart = 0;
+
+        for (com.google.android.gms.vision.text.Text line : block.getComponents()) {
+            for (com.google.android.gms.vision.text.Text element : line.getComponents()) {
+                String value = element.getValue();
+                if (value == null || value.isEmpty()) continue;
+
+                int start = text.indexOf(value, searchStart);
+                if (start < 0) continue;
+                int end = start + value.length();
+                Rect bounds = new Rect(element.getBoundingBox());
+                bounds.offset(Math.min(x0, x1), Math.min(y0, y1));
+                words.add(new SpokenWord(start, end, bounds));
+                searchStart = end;
+            }
+        }
+        return words;
+    }
+
+    private void drawSpokenWord(Rect bounds) {
+        if (!speech_active || canvasDrawingPane == null || highlightPaint == null) return;
+        canvasDrawingPane.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+        canvasDrawingPane.drawRoundRect(bounds.left, bounds.top, bounds.right, bounds.bottom,
+                18, 18, highlightPaint);
+        image_view.setVisibility(View.VISIBLE);
+        image_view.invalidate();
+    }
+
+    private static class SpokenWord {
+        final int start;
+        final int end;
+        final Rect bounds;
+
+        SpokenWord(int start, int end, Rect bounds) {
+            this.start = start;
+            this.end = end;
+            this.bounds = bounds;
+        }
     }
 }
 
