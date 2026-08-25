@@ -16,12 +16,20 @@
 
 <resources>
     <string name="title">chiara-select2speak</string>
-    <string name="description">This is a very cool service!</string>
-
+    <string name="description">
+        "chiara-select2speak" is a service to read aloud text on the screen, to ease access for users with reading difficulties.\n\n
+        The service overlays on top of visible content, and allows users to select a screen area and read aloud the text inside it.\n
+        This service is inspired by the "Android Select to Speak" and builds additional functionalities on top of it.
+        The latter can not read text not directly exposed to the Android operating system (e.g. text inside apps, images, and videogames).\n
+        "chiara-select2speak" is specifically developed to enable recognizing (and reading-aloud) also such text.
+    </string>
     <string name="start">Start</string>
     <string name="stop">Stop</string>
 
     <string name="screenshot_service_title">Chiara Screenshot Service</string>
     <string name="screenshot_service_text">Capturing screen...</string>
     <string name="screenshot_channel_name">Media Projection Service Channel</string>
+
+    <string name="settings_description">To use this app, you must enable the "chiara-select2speak" service under Accessibility settings > Applicazioni installate > "chiara-select2speak".</string>
+    <string name="open_accessibility_settings">Open Accessibility Settings</string>
 </resources>

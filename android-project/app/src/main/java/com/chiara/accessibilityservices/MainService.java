@@ -20,6 +20,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -31,6 +32,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
 import android.util.SparseArray;
 import android.view.Display;
@@ -42,10 +44,13 @@ import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.RelativeLayout;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 
 import com.google.android.gms.vision.Frame;
 import com.google.android.gms.vision.text.TextBlock;
@@ -72,6 +77,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
     // service status variables
     private boolean service_active = false;
+    private boolean speech_active = false;
     private boolean first_setup = true;
 
     // service path
@@ -90,6 +96,16 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
     // screenshot
     Bitmap latest_screenshot_bitmap;
+
+    // drag variables
+    private int initialX;
+    private int initialY;
+    private float initialTouchX;
+    private float initialTouchY;
+    private int lastX = 100, lastY = 100;
+    private boolean buttonMoved;
+    private int buttonMarginX = Integer.MIN_VALUE;
+    private int buttonMarginY = Integer.MIN_VALUE;
 
     // TextRecognizer
     TextRecognizer text_recognizer;
@@ -227,6 +243,27 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     my_log.i(DEBUG_TAG, "[onServiceConnected] Text to speech engine started successfully");
 
                     tts.setLanguage(Locale.ITALIAN);
+
+                    tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                        @Override
+                        public void onStart(String utteranceId) {
+                            new Handler(Looper.getMainLooper()).post(() -> setButtonSpeaking(true));
+                        }
+
+                        @Override
+                        public void onDone(String utteranceId) {
+                            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                                if (tts != null && !tts.isSpeaking()) {
+                                    finishSpeechOverlay();
+                                }
+                            }, 100);
+                        }
+
+                        @Override
+                        public void onError(String utteranceId) {
+                            new Handler(Looper.getMainLooper()).post(() -> finishSpeechOverlay());
+                        }
+                    });
                 }
                 else {
                     Log.e(DEBUG_TAG, "[onServiceConnected] Error starting the Text to speech engine");
@@ -294,7 +331,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 
                 paint = new Paint();
                 paint.setStyle(Paint.Style.STROKE);
-                paint.setColor(Color.BLUE);
+                paint.setColor(ContextCompat.getColor(this, R.color.selection_rect));
                 paint.setStrokeWidth(10);
             });
         } else {
@@ -306,7 +343,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     }
 
     private void configureButtons() {
-        final Button button_start   = (Button) mLayout.findViewById(R.id.start);
+        final ImageButton button_start = (ImageButton) mLayout.findViewById(R.id.start);
         final Button button_stop    = (Button) mLayout.findViewById(R.id.stop);
 
         button_start.setOnClickListener(new View.OnClickListener() {
@@ -321,25 +358,64 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             }
         });
 
+        button_start.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (service_active) return false;
+
+                WindowManager.LayoutParams params = (WindowManager.LayoutParams) mLayout.getLayoutParams();
+
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        initialX = params.x;
+                        initialY = params.y;
+                        initialTouchX = event.getRawX();
+                        initialTouchY = event.getRawY();
+                        buttonMoved = false;
+                        return true;
+
+                    case MotionEvent.ACTION_MOVE:
+                        if (Math.abs(event.getRawX() - initialTouchX) >= 10 ||
+                                Math.abs(event.getRawY() - initialTouchY) >= 10) {
+                            buttonMoved = true;
+                        }
+                        params.x = initialX + (int) (event.getRawX() - initialTouchX);
+                        params.y = initialY + (int) (event.getRawY() - initialTouchY);
+                        lastX = params.x;
+                        lastY = params.y;
+                        WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                        wm.updateViewLayout(mLayout, params);
+                        return true;
+
+                    case MotionEvent.ACTION_UP:
+                        if (!buttonMoved) {
+                            v.performClick();
+                        }
+                        return true;
+                }
+                return false;
+            }
+        });
+
         button_stop.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 Log.i(DEBUG_TAG, "[configureButtons::button_stop::onClick] Pressed 'Stop'");
                 if (tts.isSpeaking()) {
                     tts.stop();
+                    setButtonSpeaking(false);
                 }
             }
         });
     }
 
     private void setupServiceStatus(boolean status) {
-        final Button button_start   = (Button) mLayout.findViewById(R.id.start);
+        final ImageButton button_start = (ImageButton) mLayout.findViewById(R.id.start);
 
         service_active = status;
 
         if (service_active) {
-            button_start.setBackgroundColor(Color.BLUE);
-            button_start.setTextColor(Color.WHITE);
+            button_start.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.button_bg_active)));
             setOverlayProperties(true);
             if (canvasDrawingPane != null) {
                 canvasDrawingPane.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
@@ -348,8 +424,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             Log.i(DEBUG_TAG, "[setupServiceStatus] Service set to active");
         }
         else {
-            button_start.setBackgroundColor(Color.LTGRAY);
-            button_start.setTextColor(Color.BLACK);
+            button_start.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.button_bg_inactive)));
             setOverlayProperties(false);
             if (canvasDrawingPane != null) {
                 canvasDrawingPane.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
@@ -359,18 +434,56 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         }
     }
 
+    private void setButtonSpeaking(boolean speaking) {
+        if (mLayout == null) return;
+        final ImageButton button_start = (ImageButton) mLayout.findViewById(R.id.start);
+        if (button_start == null) return;
+
+        if (speaking) {
+            button_start.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.colorAccent)));
+        } else {
+            button_start.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.button_bg_inactive)));
+        }
+    }
+
     @Override public void onAccessibilityEvent(AccessibilityEvent event) { }
 
     @Override public void onInterrupt() { }
 
     @Override public boolean onTouch(View v, MotionEvent event) {
+        if (speech_active) {
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                tts.stop();
+                finishSpeechOverlay();
+            }
+            return true;
+        }
         if (!service_active) return false;
         processMotionEvent(event, verbose_ontouch, v);
         return true; // Consume the event when active
     }
 
+    private void finishSpeechOverlay() {
+        speech_active = false;
+        setButtonSpeaking(false);
+        if (mLayout != null && !first_setup) {
+            setOverlayProperties(false);
+            image_view.setVisibility(View.GONE);
+        }
+    }
+
     void setOverlayProperties(boolean fullscreen) {
+        final ImageButton button_start = (ImageButton) mLayout.findViewById(R.id.start);
         WindowManager.LayoutParams lp;
+        RelativeLayout.LayoutParams buttonParams = null;
+
+        if (button_start != null) {
+            buttonParams = (RelativeLayout.LayoutParams) button_start.getLayoutParams();
+            if (buttonMarginX == Integer.MIN_VALUE) {
+                buttonMarginX = buttonParams.leftMargin;
+                buttonMarginY = buttonParams.topMargin;
+            }
+        }
 
         if (first_setup) {
             lp = new WindowManager.LayoutParams();
@@ -378,6 +491,8 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             lp.format   = PixelFormat.TRANSLUCENT;
             lp.flags    |= WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
             lp.gravity  = Gravity.TOP | Gravity.LEFT;
+            lp.x = lastX;
+            lp.y = lastY;
         }
         else {
             lp = (WindowManager.LayoutParams) mLayout.getLayoutParams();
@@ -386,16 +501,33 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         if (fullscreen) {
             lp.height   = WindowManager.LayoutParams.MATCH_PARENT;
             lp.width    = WindowManager.LayoutParams.MATCH_PARENT;
+            lp.x = 0;
+            lp.y = 0;
+            if (button_start != null) {
+                buttonParams.leftMargin = lastX + buttonMarginX;
+                buttonParams.topMargin = lastY + buttonMarginY;
+                button_start.setLayoutParams(buttonParams);
+            }
         }
         else {
             lp.width    = WindowManager.LayoutParams.WRAP_CONTENT;
             lp.height   = WindowManager.LayoutParams.WRAP_CONTENT;
+            lp.x = lastX;
+            lp.y = lastY;
+            if (button_start != null) {
+                buttonParams.leftMargin = buttonMarginX;
+                buttonParams.topMargin = buttonMarginY;
+                button_start.setLayoutParams(buttonParams);
+            }
         }
 
-        mLayout.setLayoutParams(lp);
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        if (!first_setup) wm.removeView(mLayout);
-        wm.addView(mLayout, lp);
+        if (first_setup) {
+            wm.addView(mLayout, lp);
+        }
+        else {
+            wm.updateViewLayout(mLayout, lp);
+        }
         first_setup = false;
     }
 
@@ -425,6 +557,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     x1 = current_x;
                     y1 = current_y;
                     drawRectangle();
+                    speech_active = true;
 
                     if (latest_screenshot_bitmap != null) {
                         try {
@@ -440,6 +573,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                         tts.speak("Nessuno screenshot caricato", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
                     }
                     setupServiceStatus(false);
+                    setOverlayProperties(true);
                 }
                 break;
 
