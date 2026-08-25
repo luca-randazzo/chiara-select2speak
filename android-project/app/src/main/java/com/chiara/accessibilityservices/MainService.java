@@ -498,6 +498,15 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         }
     }
 
+    private void rememberButtonPosition(ImageButton button_start) {
+        if (button_start == null || first_setup) return;
+
+        int[] location = new int[2];
+        button_start.getLocationOnScreen(location);
+        lastX = location[0] - buttonMarginX;
+        lastY = location[1] - buttonMarginY;
+    }
+
     void setOverlayProperties(boolean fullscreen) {
         final ImageButton button_start = (ImageButton) mLayout.findViewById(R.id.start);
         WindowManager.LayoutParams lp;
@@ -511,6 +520,8 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             }
         }
 
+        rememberButtonPosition(button_start);
+
         if (first_setup) {
             lp = new WindowManager.LayoutParams();
             lp.type     = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
@@ -522,14 +533,6 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         }
         else {
             lp = (WindowManager.LayoutParams) mLayout.getLayoutParams();
-            if (lp.width == WindowManager.LayoutParams.MATCH_PARENT && button_start != null) {
-                lastX = buttonParams.leftMargin - buttonMarginX;
-                lastY = buttonParams.topMargin - buttonMarginY;
-            }
-            else {
-                lastX = lp.x;
-                lastY = lp.y;
-            }
         }
 
         if (fullscreen) {
