@@ -18,8 +18,7 @@ The "Android Select to Speak" service implements these features.
 - Select welcome message by TTS-engine
 
 # Prioritized
-- Once the UI button is pressed, a new button shall appear: rewind
--- If the user presses rewind, the text2speech engine shall restart reading from the beginning
+n/a
 
 # Done
 ✓ Once this service is installed, an app shall be created among the Android apps. If clicked, it shall lead to the settings of service
@@ -29,3 +28,4 @@ The "Android Select to Speak" service implements these features.
 ✓ The main UI button should be movable by the user around the screen, to avoid covering potential areas of interest
 ✓ If text2speech engine is reading, and user clicks anywhere on the screen than the UI button, text2speech engine shall stop reading
 ✓ The UI shall highlight word by word (e.g. through a yellow oval) as they're being read-aloud by the text2speech engine 
+✓ Once the UI button is pressed, a new button shall appear: rewind. If the user presses rewind, the text2speech engine shall restart reading from the beginning
