@@ -572,9 +572,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             button_replay.setVisibility(View.VISIBLE);
         }
         if (mLayout != null && !first_setup) {
-            if (!replaying_speech) {
-                setOverlayProperties(false);
-            }
+            setOverlayProperties(false);
             image_view.setVisibility(View.GONE);
         }
         replaying_speech = false;
@@ -590,6 +588,10 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         replaying_speech = true;
         speechSession++;
         setReplayButtonSpeaking(true);
+        setOverlayProperties(true);
+        image_view.setClickable(true);
+        image_view.setOnTouchListener(this);
+        image_view.setVisibility(View.VISIBLE);
 
         for (ReplayItem item : lastSpokenItems) {
             String utteranceId = "ocr-replay-" + utteranceCounter++;

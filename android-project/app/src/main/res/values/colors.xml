@@ -8,6 +8,7 @@
     <color name="play_icon_warm">#E64A19</color> <!-- Deep Orange 800 -->
     <color name="button_bg_active">#FFAB91</color> <!-- Soft Coral -->
     <color name="button_bg_inactive">#FFF9C4</color> <!-- Very Light Yellow -->
+    <color name="replay_button_border_red">#FF0000</color> <!-- Red border -->
 
     <color name="selection_rect">#80FF7043</color> <!-- Semi-transparent warm orange -->
 </resources>
