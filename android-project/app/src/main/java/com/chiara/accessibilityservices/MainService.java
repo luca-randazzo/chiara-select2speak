@@ -581,8 +581,8 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 button_replay.setVisibility(View.VISIBLE);
                 button_replay.animate()
                         .alpha(0f)
-                        .setStartDelay(5000)
-                        .setDuration(500)
+                        .setStartDelay(7500)
+                        .setDuration(1000)
                         .withEndAction(() -> {
                             button_replay.setVisibility(View.GONE);
                             button_replay.setAlpha(1f);
