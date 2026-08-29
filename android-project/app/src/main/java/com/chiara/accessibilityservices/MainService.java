@@ -694,10 +694,42 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 break;
 
             case MotionEvent.ACTION_UP :
-                if (previous_action == MotionEvent.ACTION_MOVE) {
-                    x1 = current_x;
-                    y1 = current_y;
-                    drawRectangle();
+                boolean isTap = (Math.abs(current_x - x0) < 15 && Math.abs(current_y - y0) < 15);
+                
+                if (isTap || previous_action == MotionEvent.ACTION_DOWN || previous_action == MotionEvent.ACTION_MOVE) {
+                    if (isTap) {
+                        Log.i(DEBUG_TAG, "[processMotionEvent] Tap detected at (" + current_x + ", " + current_y + "), searching Accessibility Node Tree");
+                        Rect nodeBounds = findNodeBounds(current_x, current_y);
+                        if (nodeBounds != null && !nodeBounds.isEmpty() && nodeBounds.width() > 5 && nodeBounds.height() > 5) {
+                            Log.i(DEBUG_TAG, "[processMotionEvent] Accessibility Node text found: " + nodeBounds.toString());
+                            int padding = 5;
+                            x0 = Math.max(0, nodeBounds.left - padding);
+                            y0 = Math.max(0, nodeBounds.top - padding);
+                            x1 = (latest_screenshot_bitmap != null) ? Math.min(latest_screenshot_bitmap.getWidth(), nodeBounds.right + padding) : nodeBounds.right + padding;
+                            y1 = (latest_screenshot_bitmap != null) ? Math.min(latest_screenshot_bitmap.getHeight(), nodeBounds.bottom + padding) : nodeBounds.bottom + padding;
+                            drawRectangle();
+                        } else {
+                            Log.i(DEBUG_TAG, "[processMotionEvent] Accessibility Node Tree returned no text node. Falling back to OCR detection on full screenshot.");
+                            Rect ocrBounds = findOcrBoundsAtPosition(current_x, current_y);
+                            if (ocrBounds != null && !ocrBounds.isEmpty()) {
+                                Log.i(DEBUG_TAG, "[processMotionEvent] OCR text bounds found: " + ocrBounds.toString());
+                                x0 = ocrBounds.left;
+                                y0 = ocrBounds.top;
+                                x1 = ocrBounds.right;
+                                y1 = ocrBounds.bottom;
+                                drawRectangle();
+                            } else {
+                                Log.w(DEBUG_TAG, "[processMotionEvent] No text found near tap (" + current_x + ", " + current_y + ")");
+                                x1 = current_x;
+                                y1 = current_y;
+                            }
+                        }
+                    } else {
+                        x1 = current_x;
+                        y1 = current_y;
+                        drawRectangle();
+                    }
+                    
                     speech_active = true;
                     replaying_speech = false;
                     speechSession++;
@@ -723,6 +755,139 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             default:
                 break;
         }
+    }
+
+    private Rect findNodeBounds(int x, int y) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            List<android.view.accessibility.AccessibilityWindowInfo> windows = getWindows();
+            if (windows != null && !windows.isEmpty()) {
+                for (android.view.accessibility.AccessibilityWindowInfo window : windows) {
+                    if (window == null) continue;
+                    if (window.getType() == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) {
+                        continue;
+                    }
+                    Rect windowBounds = new Rect();
+                    window.getBoundsInScreen(windowBounds);
+                    if (windowBounds.contains(x, y)) {
+                        android.view.accessibility.AccessibilityNodeInfo root = window.getRoot();
+                        if (root != null) {
+                            android.view.accessibility.AccessibilityNodeInfo clickedNode = findNodeAtPosition(root, x, y);
+                            if (clickedNode != null) {
+                                Rect bounds = new Rect();
+                                clickedNode.getBoundsInScreen(bounds);
+                                return bounds;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        android.view.accessibility.AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root != null) {
+            android.view.accessibility.AccessibilityNodeInfo clickedNode = findNodeAtPosition(root, x, y);
+            if (clickedNode != null) {
+                Rect bounds = new Rect();
+                clickedNode.getBoundsInScreen(bounds);
+                return bounds;
+            }
+        }
+        return null;
+    }
+
+    private boolean nodeHasText(android.view.accessibility.AccessibilityNodeInfo node) {
+        if (node == null) return false;
+        CharSequence text = node.getText();
+        if (text != null && text.toString().trim().length() > 0) return true;
+        CharSequence desc = node.getContentDescription();
+        if (desc != null && desc.toString().trim().length() > 0) return true;
+        return false;
+    }
+
+    private android.view.accessibility.AccessibilityNodeInfo findNodeAtPosition(android.view.accessibility.AccessibilityNodeInfo node, int x, int y) {
+        if (node == null) return null;
+        Rect bounds = new Rect();
+        node.getBoundsInScreen(bounds);
+        if (!bounds.contains(x, y)) return null;
+
+        for (int i = node.getChildCount() - 1; i >= 0; i--) {
+            android.view.accessibility.AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                android.view.accessibility.AccessibilityNodeInfo foundInChild = findNodeAtPosition(child, x, y);
+                if (foundInChild != null) {
+                    return foundInChild;
+                }
+            }
+        }
+        
+        if (nodeHasText(node)) {
+            return node;
+        }
+        return null;
+    }
+
+    private Rect findOcrBoundsAtPosition(int x, int y) {
+        if (latest_screenshot_bitmap == null || text_recognizer == null || !text_recognizer.isOperational()) {
+            return null;
+        }
+
+        try {
+            Frame frame = new Frame.Builder().setBitmap(latest_screenshot_bitmap).build();
+            SparseArray<TextBlock> textBlocks = text_recognizer.detect(frame);
+
+            if (textBlocks == null || textBlocks.size() == 0) {
+                return null;
+            }
+
+            Rect bestBounds = null;
+            int minDistance = Integer.MAX_VALUE;
+
+            for (int i = 0; i < textBlocks.size(); i++) {
+                TextBlock block = textBlocks.valueAt(i);
+                if (block == null || block.getValue() == null || block.getValue().trim().isEmpty()) {
+                    continue;
+                }
+
+                for (com.google.android.gms.vision.text.Text line : block.getComponents()) {
+                    if (line == null || line.getBoundingBox() == null) continue;
+                    Rect lineBox = line.getBoundingBox();
+                    int dist = distanceToRect(x, y, lineBox);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        bestBounds = new Rect(lineBox);
+                    }
+                }
+                
+                Rect blockBox = block.getBoundingBox();
+                if (blockBox != null) {
+                    int dist = distanceToRect(x, y, blockBox);
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        bestBounds = new Rect(blockBox);
+                    }
+                }
+            }
+
+            int maxAllowedDistance = 150;
+            if (bestBounds != null && minDistance <= maxAllowedDistance) {
+                int padding = 10;
+                int left = Math.max(0, bestBounds.left - padding);
+                int top = Math.max(0, bestBounds.top - padding);
+                int right = Math.min(latest_screenshot_bitmap.getWidth(), bestBounds.right + padding);
+                int bottom = Math.min(latest_screenshot_bitmap.getHeight(), bestBounds.bottom + padding);
+                return new Rect(left, top, right, bottom);
+            }
+        } catch (Exception e) {
+            Log.e(DEBUG_TAG, "Error in findOcrBoundsAtPosition: " + e.getMessage());
+        }
+
+        return null;
+    }
+
+    private int distanceToRect(int x, int y, Rect rect) {
+        int dx = Math.max(0, Math.max(rect.left - x, x - rect.right));
+        int dy = Math.max(0, Math.max(rect.top - y, y - rect.bottom));
+        return (int) Math.hypot(dx, dy);
     }
 
     void printMotionEvent(MotionEvent event) {
