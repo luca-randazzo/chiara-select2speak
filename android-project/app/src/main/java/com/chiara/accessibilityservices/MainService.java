@@ -540,6 +540,12 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         final ImageButton button_replay = (ImageButton) mLayout.findViewById(R.id.replay);
         if (button_replay == null) return;
 
+        if (speaking) {
+            button_replay.animate().cancel();
+            button_replay.setAlpha(1f);
+            button_replay.setVisibility(View.VISIBLE);
+        }
+
         int color = speaking ? R.color.colorAccent : R.color.button_bg_inactive;
         button_replay.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, color)));
     }
@@ -568,8 +574,21 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         setButtonSpeaking(false);
         setReplayButtonSpeaking(false);
         ImageButton button_replay = mLayout == null ? null : mLayout.findViewById(R.id.replay);
-        if (button_replay != null && showReplay && !lastSpokenItems.isEmpty()) {
-            button_replay.setVisibility(View.VISIBLE);
+        if (button_replay != null) {
+            button_replay.animate().cancel();
+            if (showReplay && !lastSpokenItems.isEmpty()) {
+                button_replay.setAlpha(1f);
+                button_replay.setVisibility(View.VISIBLE);
+                button_replay.animate()
+                        .alpha(0f)
+                        .setStartDelay(5000)
+                        .setDuration(500)
+                        .withEndAction(() -> {
+                            button_replay.setVisibility(View.GONE);
+                            button_replay.setAlpha(1f);
+                        })
+                        .start();
+            }
         }
         if (mLayout != null && !first_setup) {
             setOverlayProperties(false);
