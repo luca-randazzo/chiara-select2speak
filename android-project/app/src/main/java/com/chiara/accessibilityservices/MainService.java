@@ -369,7 +369,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 
                 paint = new Paint();
                 paint.setStyle(Paint.Style.STROKE);
-                paint.setColor(ContextCompat.getColor(this, R.color.selection_rect));
+                paint.setColor(Color.RED);
                 paint.setStrokeWidth(10);
 
                 highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -690,6 +690,8 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 break;
 
             case MotionEvent.ACTION_MOVE:
+                x1 = current_x;
+                y1 = current_y;
                 drawRectangle();
                 break;
 
@@ -1055,7 +1057,11 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     void drawRectangle() {
         if (canvasDrawingPane == null) return;
         canvasDrawingPane.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
-        canvasDrawingPane.drawRoundRect(x0, y0, current_x, current_y, 25, 25, paint);
+        float left = Math.min(x0, x1);
+        float top = Math.min(y0, y1);
+        float right = Math.max(x0, x1);
+        float bottom = Math.max(y0, y1);
+        canvasDrawingPane.drawRoundRect(left, top, right, bottom, 25, 25, paint);
         image_view.invalidate();
     }
 
