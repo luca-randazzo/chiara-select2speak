@@ -369,7 +369,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 
                 paint = new Paint();
                 paint.setStyle(Paint.Style.STROKE);
-                paint.setColor(Color.RED);
+                paint.setColor(ContextCompat.getColor(MainService.this, R.color.play_icon_warm));
                 paint.setStrokeWidth(10);
 
                 highlightPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
