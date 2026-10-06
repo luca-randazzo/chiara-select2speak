@@ -2,6 +2,7 @@ package com.chiara.accessibilityservices;
 
 import android.content.ComponentName;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.View;
@@ -33,6 +34,17 @@ public class SettingsActivity extends AppCompatActivity {
                 // Fallback for some Android versions to open the specific service settings
                 // However, ACTION_ACCESSIBILITY_SETTINGS is safer to ensure they see the toggle.
 
+                startActivity(intent);
+            }
+        });
+
+        Button btnOpenVolume = findViewById(R.id.btn_open_volume);
+        btnOpenVolume.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent intent = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? new Intent(Settings.Panel.ACTION_VOLUME)
+                        : new Intent(Settings.ACTION_SOUND_SETTINGS);
                 startActivity(intent);
             }
         });

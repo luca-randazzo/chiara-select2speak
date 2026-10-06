@@ -31,6 +31,8 @@
     <string name="screenshot_service_text">Capturing screen...</string>
     <string name="screenshot_channel_name">Media Projection Service Channel</string>
 
-    <string name="settings_description">To use this app, you must enable the "chiara-select2speak" service under Accessibility settings > Applicazioni installate > "chiara-select2speak".</string>
+    <string name="settings_description">To use this app, you must enable the "chiara-select2speak" service under Accessibility settings > Installed apps > "chiara-select2speak"</string>
     <string name="open_accessibility_settings">Open Accessibility Settings</string>
+    <string name="media_volume_description">To hear the output of this app, the Android \"Media\" volume must be &gt; 0</string>
+    <string name="open_volume_settings">Open Volume Settings</string>
 </resources>

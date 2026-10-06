@@ -2,8 +2,7 @@
 "chiara-select2speak" is an Android accessibility service that allows to read aloud text displayed on the screen, to ease access for users with reading difficulties.
 
 Users can select an area on the screen and the service will read aloud the text inside it.
-
-Watch a demo video [here](https://youtu.be/mUp831sS0lo).
+Demo video: [here](https://youtu.be/mUp831sS0lo).
 
 Functioning:
 - The user activates the service from the Android device Accessibility Settings
@@ -27,5 +26,3 @@ This service is inspired by the [Android Select to Speak](https://support.google
 The service was successfully tested under:
 - Galaxy Tab A (2016) [SM-T585]
 - Android: 8.10 (Oreo) [API level: 27]
-
-The service was compiled with Android Studio 4.0.1
