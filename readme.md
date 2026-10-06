@@ -1,8 +1,9 @@
 # Description
 "chiara-select2speak" is an Android accessibility service that allows to read aloud text displayed on the screen, to ease access for users with reading difficulties.
 
-The service enables users to select an area on the screen and to read aloud the text inside it.
-Demo video: https://youtu.be/mUp831sS0lo
+Users can select an area on the screen and the service will read aloud the text inside it.
+
+Watch a demo video [here](https://youtu.be/mUp831sS0lo).
 
 Functioning:
 - The user activates the service from the Android device Accessibility Settings
@@ -17,9 +18,9 @@ Functioning:
 # Inspiration
 I developed this service to enable my sister, Chiara, to independently play with her favourite videogames - without the need of asking help to read the text to anyone :)
 
-Read and watch a summary of the inspiration behind this project here: https://www.linkedin.com/feed/update/urn:li:activity:6668395321850134528/ <3
+Read and watch a summary of the inspiration behind this project [here](https://www.linkedin.com/feed/update/urn:li:activity:6668395321850134528/) <3
 
-This service is inspired by the "Android Select to Speak" (https://support.google.com/accessibility/android/answer/7349565?hl=en), and builds additional functionalities on top of it. Indeed the native the "Android Select to Speak" service can **not** read text not directly exposed to the Android operating system (e.g. text inside apps, images, and videogames).
+This service is inspired by the [Android Select to Speak](https://support.google.com/accessibility/android/answer/7349565?hl=en) service, and builds additional functionalities on top of it. Indeed the native the "Android Select to Speak" service can **not** read text not directly exposed to the Android operating system (e.g. text inside apps, images, and videogames).
 "chiara-select2speak" is specifically developed to also enable recognizing (and reading-aloud) such text.  
 
 # Requirements
