@@ -75,7 +75,34 @@ This app includes built-in test crash handling to verify your Firebase Crashlyti
 5. Open your [Firebase Console](https://console.firebase.google.com/) -> **Crashlytics** dashboard to view the test crash report and device stack traces.
 
 ### 2. Firebase authentication (Google sign-in)
-The app saves **every text it speaks aloud** to Firebase Storage, under a daily folder named `YYYYMMDD_select2speak` (e.g. `20261121_select2speak`), in a single shared `data.json` file.
+The app saves **every text it OCR's from the screen** to Firebase Storage, under a daily folder named `YYYYMMDD_select2speak` (e.g. `20261121_select2speak`), in a single shared `data.json` file.
+
+A selection is stored **all or nothing, and only if the Text-to-Speech engine reads it to the end**: when the user taps anywhere on the screen (or presses **Stop**) while Chiara is still speaking, the engine is stopped and **nothing** from that selection is uploaded — not even the blocks that had already been read. Status messages ("Nessun testo trovato", capture errors, the welcome message) and replays of a previous selection are never recorded either.
+
+The rule is implemented with a pending queue keyed by `utteranceId`: `bitmapToSpeech()` queues each OCR text block, `UtteranceProgressListener.onDone()` marks a block as read, `finishSpeechOverlay(true)` flushes the whole selection to Firebase in the order it was spoken, and every interruption path (`onTouch`, Stop button, replay, new selection, engine restart, `onInterrupt()`, `onDestroy()`, `onError()`) drops the queue.
+
+Each record follows **`chiara-speech2text_schema-data` v1.2.2** (`docs/schemas/schema-data_v1.2.2.json` of `chiara-speech2text_private-v3`). This app records no audio and runs no ASR inference, so only `entry_id`, `entry_timestamp` and `inference_transcript` (the OCR'd text) carry real data; the other fields are written with the `"n/a"` placeholder so the complete set of keys is always present — except `reviewer_is_reviewed`, which is `false` because no record has been reviewed when the app stores it:
+
+```json
+{
+  "schema_version": "1.2.2_20261121",
+  "data": [
+    {
+      "entry_id": "f6143cc1-dc39-4520-8034-1316bbbc93a2",
+      "entry_timestamp": "2026-11-21T18:31:24.324Z",
+      "inference_transcript": "Ciao Luca, come stai?",
+      "audio_data": "n/a", "audio_duration": "n/a", "audio_source": "n/a",
+      "inference_confidence": "n/a", "inference_model": "n/a",
+      "user_is_validated": "n/a", "user_transcript_processed": "n/a",
+      "reviewer_is_reviewed": false, "reviewer_transcript_corrected": "n/a"
+    }
+  ]
+}
+```
+
+`entry_timestamp` is the moment the block was spoken, not the moment of the upload: the blocks of a selection are uploaded together, right after the last one has been read.
+
+Records written by older builds (`{"timestamp": ..., "text": ...}`) are migrated to this shape automatically the next time the app appends to that day's file.
 
 Storage access is **authenticated**: uploads only happen when a user is signed in, so the Storage security rules can require `request.auth != null` instead of exposing the data publicly.
 
@@ -135,10 +162,15 @@ service firebase.storage {
 4. Pick an account and approve; the app returns to the Settings screen and shows **Signed in as: <email>**.
 5. The session is persisted by the Firebase SDK, so you only need to sign in once; the button then becomes **Sign out**.
 
-#### 2.5. Verifying the spoken-text upload
+#### 2.5. Verifying the OCR-text upload
 1. With the app signed in, activate the accessibility service and have it read some text aloud.
 2. Open **Firebase Console -> Storage**: you should see `<YYYYMMDD>_select2speak/data.json`.
-3. The file is a JSON array where each entry contains the `timestamp` and the `text` that was spoken.
+3. The file is a JSON object `{"schema_version": ..., "data": [...]}`: every entry carries the
+   schema v1.2.2 keys, with the recognized text in `inference_transcript` (see the example above).
+   A selection appears only after Chiara has read all of it: interrupt her with a tap and
+   nothing is written at all.
+4. `logcat -s Chiara_MainService` shows `[Firebase] Successfully saved spoken text to ...` for each
+   record, or why it was skipped (`User is not authenticated`, failed attempts).
 
 #### 2.6. Troubleshooting
 | Message / log | Cause | Fix |

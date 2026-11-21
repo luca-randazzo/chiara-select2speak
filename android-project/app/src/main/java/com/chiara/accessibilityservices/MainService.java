@@ -60,6 +60,7 @@ import com.google.android.gms.vision.text.TextRecognizer;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.crashlytics.FirebaseCrashlytics;
 import com.google.firebase.storage.FirebaseStorage;
+import com.google.firebase.storage.StorageMetadata;
 import com.google.firebase.storage.StorageReference;
 import com.google.firebase.storage.UploadTask;
 import com.google.android.gms.tasks.Task;
@@ -67,21 +68,29 @@ import com.google.android.gms.tasks.Tasks;
 import com.chiara.accessibilityservices.BuildConfig;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
+import java.util.TimeZone;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /* This service provides an entry point to the Chiara_Select2Speak service. */
 public class MainService extends AccessibilityService implements View.OnTouchListener {
@@ -144,16 +153,160 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     private final Map<String, Integer> utteranceSessions = new HashMap<>();
     private final List<ReplayItem> lastSpokenItems = new ArrayList<>();
     private int utteranceCounter = 0;
-    private int speechSession = 0;
+    // Read from the TextToSpeech callback thread, written from the main thread.
+    private volatile int speechSession = 0;
+    // Session the user interrupted: nothing queued in it may reach Firebase anymore.
+    private volatile int interruptedSpeechSession = -1;
+    // utteranceId -> texts of the ongoing selection, each waiting for its onDone().
+    private final Map<String, PendingText> pendingFirebaseTexts = new ConcurrentHashMap<>();
+    // Keeps the order the blocks of a selection were spoken in.
+    private int pendingTextOrder = 0;
     private Paint highlightPaint;
+
+    // ---------------------------------------------------------------
+    // Firebase data logging - chiara-speech2text_schema-data v1.2.2
+    // ---------------------------------------------------------------
+    // Every text OCR'd from the screen becomes one record in
+    // <YYYYMMDD>_select2speak/data.json on Firebase Storage - but a whole selection
+    // is written only once the Text to speech engine has read every one of its
+    // blocks to the end, see queueSpokenTextForFirebase()/flushSpokenTexts(): a
+    // selection the user cut short by tapping on the screen is never uploaded.
+    // Records use the canonical container of the speech2text data pipeline:
+    //
+    //     { "schema_version": "1.2.2_20261121", "data": [ {record}, ... ] }
+    //
+    // A record follows docs/schemas/schema-data_v1.2.2.json of
+    // chiara-speech2text_private-v3. This app records no audio and runs no ASR
+    // inference, so only entry_id, entry_timestamp and inference_transcript (the
+    // OCR'd text) carry real information: every other field of the schema is
+    // written with the SCHEMA_NOT_APPLICABLE placeholder, and is kept (instead of
+    // being omitted) so the file stays readable by the Speech Data Explorer and
+    // by the training pipelines, which expect the complete set of keys.
+    //
+    // Note: schema v1.2.2 declares audio_duration / inference_confidence as
+    // numbers, audio_source as an enum and user_is_validated as boolean|null, but
+    // the placeholder requested here is the string "n/a" for all of them - except
+    // reviewer_is_reviewed, which is false because a record has not been reviewed
+    // when the app stores it.
+    // ---------------------------------------------------------------
+    private static final String SCHEMA_VERSION                = "1.2.2_20261121";
+    private static final String SCHEMA_NOT_APPLICABLE         = "n/a";
+    private static final String FIREBASE_FOLDER_SUFFIX        = "_select2speak";
+    private static final String FIREBASE_DATA_FILE_NAME       = "data.json";
+    private static final long   FIREBASE_MAX_JSON_BYTES       = 10L * 1024 * 1024;
+    private static final long   FIREBASE_OPERATION_TIMEOUT_S  = 30L;
+    private static final int    FIREBASE_MAX_ATTEMPTS         = 3;
 
     private final ExecutorService firebaseExecutor = Executors.newSingleThreadExecutor();
 
     private void speakText(CharSequence text, int queueMode, android.os.Bundle params, String utteranceId) {
         if (tts != null && text != null && text.length() > 0) {
             tts.speak(text, queueMode, params, utteranceId);
-            saveSpokenTextToFirebase(text.toString());
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Store only what was actually spoken - all or nothing per selection
+    // ---------------------------------------------------------------
+    // One selection (one screenshot, one set of OCR text blocks) is stored only
+    // when the Text to speech engine has read every one of its blocks to the end:
+    //   * bitmapToSpeech() queues each block (spoken == false);
+    //   * onDone() marks a block as spoken (commitSpokenTextToFirebase);
+    //   * when the engine reports the last block as done, finishSpeechOverlay(true)
+    //     calls flushSpokenTexts(), which uploads the whole selection in the order
+    //     it was spoken;
+    //   * any interruption - tap anywhere on the screen, Stop button, replay, new
+    //     selection, engine restart, service destruction, engine error - discards
+    //     the queue, so the selection is never stored, not even partially.
+    // ---------------------------------------------------------------
+
+    /** Remember an OCR'd text until the engine confirms it has been spoken entirely. */
+    private void queueSpokenTextForFirebase(String utteranceId, String text) {
+        if (utteranceId == null || text == null || text.trim().isEmpty()) return;
+
+        // entry_timestamp is taken now, when the text is spoken, not when the
+        // selection is uploaded after the last block has been read.
+        pendingFirebaseTexts.put(utteranceId,
+                new PendingText(text, speechSession, pendingTextOrder++, nowIso8601Utc()));
+    }
+
+    /**
+     * Called by onDone(): this block has been spoken to the end. Nothing is
+     * uploaded yet - a selection is stored as a whole, or not at all.
+     */
+    private void commitSpokenTextToFirebase(String utteranceId) {
+        if (utteranceId == null) return;
+
+        PendingText pending = pendingFirebaseTexts.get(utteranceId);
+        if (pending == null) return;                                        // already discarded
+        if (pending.session != speechSession) return;                       // belongs to an older selection
+        if (speechSession == interruptedSpeechSession) return;              // user interrupted this session
+
+        pending.spoken = true;
+    }
+
+    /**
+     * Upload the selection that has just been read to the end. All-or-nothing: if
+     * even one queued block has not been confirmed by onDone(), the whole selection
+     * is dropped, so data.json never contains half-read selections.
+     */
+    private void flushSpokenTexts() {
+        List<PendingText> selection = new ArrayList<>();
+        for (PendingText pending : pendingFirebaseTexts.values()) {
+            if (pending.session == speechSession) selection.add(pending);
+        }
+        pendingFirebaseTexts.clear();
+        if (selection.isEmpty()) return;
+
+        if (speechSession == interruptedSpeechSession) {
+            firebaseLog('I', "Selection interrupted: " + selection.size()
+                    + " text(s) not saved to " + FIREBASE_DATA_FILE_NAME);
+            return;
+        }
+
+        int unread = 0;
+        for (PendingText pending : selection) {
+            if (!pending.spoken) unread++;
+        }
+        if (unread > 0) {
+            firebaseLog('W', "Selection incomplete: " + unread + " of " + selection.size()
+                    + " text(s) were never reported as spoken - nothing saved to " + FIREBASE_DATA_FILE_NAME);
+            return;
+        }
+
+        Collections.sort(selection, new Comparator<PendingText>() {
+            @Override
+            public int compare(PendingText a, PendingText b) {
+                return Integer.compare(a.order, b.order);
+            }
+        });
+
+        for (PendingText pending : selection) {
+            saveSpokenTextToFirebase(pending.text, pending.timestamp);
+        }
+        firebaseLog('I', "Selection read to the end: " + selection.size()
+                + " record(s) queued for " + FIREBASE_DATA_FILE_NAME);
+    }
+
+    /**
+     * Mark the ongoing session as interrupted and drop everything that has not
+     * been spoken: a selection is stored only if it was read to the end.
+     * Called before every tts.stop() and whenever the speech overlay is closed early.
+     */
+    private void discardUnspokenTexts() {
+        interruptedSpeechSession = speechSession;
+        if (!pendingFirebaseTexts.isEmpty()) {
+            firebaseLog('I', "Speech interrupted: " + pendingFirebaseTexts.size()
+                    + " text(s) of this selection not saved to " + FIREBASE_DATA_FILE_NAME);
+        }
+        pendingFirebaseTexts.clear();
+    }
+
+    /** Start speaking a new batch: nothing queued before now can be uploaded anymore. */
+    private void startNewSpeechSession() {
+        pendingFirebaseTexts.clear();
+        speechSession++;
+        interruptedSpeechSession = -1;
     }
 
     // ---------------------------------------------------------------
@@ -194,6 +347,10 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
     private void shutdownTts() {
         if (tts == null) return;
+
+        // The engine is going away (system language change, service destruction):
+        // whatever has not been spoken yet must not be stored.
+        discardUnspokenTexts();
 
         try {
             tts.stop();
@@ -251,55 +408,283 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         createTts();
     }
 
-    private void saveSpokenTextToFirebase(String text) {
-        if (text == null || text.trim().isEmpty()) return;
-        firebaseExecutor.execute(() -> {
-            try {
-                FirebaseAuth auth = FirebaseAuth.getInstance();
-                if (auth.getCurrentUser() == null) {
-                    Log.w(DEBUG_TAG, "[Firebase] User is not authenticated. Please sign in via Settings.");
+    // ---------------------------------------------------------------
+    // data.json (schema v1.2.2) upload helpers
+    // ---------------------------------------------------------------
+    /**
+     * Queue one schema-v1.2.2 record containing the OCR'd text for upload into
+     * <YYYYMMDD>_select2speak/data.json.
+     * Only reached through flushSpokenTexts(), i.e. for a selection the engine has
+     * read to the end without being interrupted. entry_id is generated here and
+     * entry_timestamp is the moment the text was spoken, passed in by the caller,
+     * rather than the moment the background upload runs.
+     */
+    private void saveSpokenTextToFirebase(String text, String entryTimestamp) {
+        if (text == null) return;
+
+        String transcript = text.trim();
+        if (transcript.isEmpty()) return;
+
+        final JSONObject entry;
+        try {
+            entry = buildSchemaEntry(transcript, entryTimestamp);
+        } catch (JSONException e) {
+            firebaseLog('E', "Unable to build the " + FIREBASE_DATA_FILE_NAME + " record: " + e.getMessage());
+            return;
+        }
+
+        try {
+            firebaseExecutor.execute(() -> appendEntryToFirebaseDataJson(entry));
+        } catch (Exception e) {
+            // Executor already shut down (service destroyed): nothing else to do.
+            Log.w(DEBUG_TAG, "[Firebase] Upload queue unavailable, record dropped", e);
+        }
+    }
+
+    /**
+     * Build a record conforming to chiara-speech2text_schema-data v1.2.2.
+     * Only entry_id, entry_timestamp and inference_transcript are meaningful for
+     * this app: the remaining fields are filled with the "n/a" placeholder so that
+     * the complete set of keys is always present, except reviewer_is_reviewed,
+     * which is false because no reviewer has looked at the record when it is stored.
+     */
+    private JSONObject buildSchemaEntry(String transcript, String entryTimestamp) throws JSONException {
+        JSONObject entry = new JSONObject();
+        entry.put("entry_id", UUID.randomUUID().toString());
+        entry.put("entry_timestamp", entryTimestamp != null && !entryTimestamp.isEmpty()
+                ? entryTimestamp : nowIso8601Utc());
+        entry.put("audio_data", SCHEMA_NOT_APPLICABLE);
+        entry.put("audio_duration", SCHEMA_NOT_APPLICABLE);
+        entry.put("audio_source", SCHEMA_NOT_APPLICABLE);
+        entry.put("inference_transcript", transcript);
+        entry.put("inference_confidence", SCHEMA_NOT_APPLICABLE);
+        entry.put("inference_model", SCHEMA_NOT_APPLICABLE);
+        entry.put("user_is_validated", SCHEMA_NOT_APPLICABLE);
+        entry.put("user_transcript_processed", SCHEMA_NOT_APPLICABLE);
+        entry.put("reviewer_is_reviewed", false);
+        entry.put("reviewer_transcript_corrected", SCHEMA_NOT_APPLICABLE);
+        return entry;
+    }
+
+    /**
+     * Read-modify-write of the daily data.json. Serialized on firebaseExecutor so
+     * that two spoken texts can never overwrite each other, and retried a couple of
+     * times because the whole operation depends on the mobile connection.
+     */
+    private void appendEntryToFirebaseDataJson(JSONObject entry) {
+        try {
+            FirebaseAuth auth = FirebaseAuth.getInstance();
+            if (auth.getCurrentUser() == null) {
+                firebaseLog('W', "User is not authenticated: text not saved. Sign in via Settings.");
+                return;
+            }
+
+            String dateFolder = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date())
+                    + FIREBASE_FOLDER_SUFFIX;
+
+            // Uses the storage bucket declared in google-services.json
+            FirebaseStorage storage = FirebaseStorage.getInstance();
+            StorageReference folderRef = storage.getReference().child(dateFolder);
+            StorageReference fileRef = folderRef.child(FIREBASE_DATA_FILE_NAME);
+
+            Exception lastError = null;
+            for (int attempt = 1; attempt <= FIREBASE_MAX_ATTEMPTS; attempt++) {
+                try {
+                    JSONArray entries = loadDataJsonEntries(fileRef);
+                    normalizeEntriesToSchema(entries);
+                    entries.put(entry);
+
+                    JSONObject document = new JSONObject();
+                    document.put("schema_version", SCHEMA_VERSION);
+                    document.put("data", entries);
+
+                    byte[] uploadBytes = document.toString(2).getBytes(StandardCharsets.UTF_8);
+                    StorageMetadata metadata = new StorageMetadata.Builder()
+                            .setContentType("application/json")
+                            .build();
+
+                    Task<UploadTask.TaskSnapshot> uploadTask = fileRef.putBytes(uploadBytes, metadata);
+                    Tasks.await(uploadTask, FIREBASE_OPERATION_TIMEOUT_S, TimeUnit.SECONDS);
+
+                    firebaseLog('I', "Successfully saved spoken text to " + dateFolder + "/"
+                            + FIREBASE_DATA_FILE_NAME + " (total " + entries.length()
+                            + " records, schema v" + SCHEMA_VERSION + ")");
                     return;
-                }
-
-                SimpleDateFormat sdfDate = new SimpleDateFormat("yyyyMMdd", Locale.US);
-                String dateFolder = sdfDate.format(new Date()) + "_select2speak";
-
-                SimpleDateFormat sdfTimestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
-                String timestamp = sdfTimestamp.format(new Date());
-
-                // Uses the storage bucket declared in google-services.json
-                FirebaseStorage storage = FirebaseStorage.getInstance();
-                StorageReference folderRef = storage.getReference().child(dateFolder);
-                StorageReference fileRef = folderRef.child("data.json");
-
-                JSONArray jsonArray;
-                final long ONE_MEGABYTE = 1024 * 1024;
-
-                try {
-                    Task<byte[]> downloadTask = fileRef.getBytes(ONE_MEGABYTE);
-                    byte[] bytes = Tasks.await(downloadTask);
-                    String jsonStr = new String(bytes, StandardCharsets.UTF_8);
-                    jsonArray = new JSONArray(jsonStr);
                 } catch (Exception e) {
-                    jsonArray = new JSONArray();
+                    lastError = e;
+                    firebaseLog('W', "Attempt " + attempt + "/" + FIREBASE_MAX_ATTEMPTS
+                            + " failed while writing " + dateFolder + "/" + FIREBASE_DATA_FILE_NAME
+                            + ": " + e);
+                    if (attempt < FIREBASE_MAX_ATTEMPTS) {
+                        try {
+                            Thread.sleep(500L * attempt);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                    }
                 }
+            }
 
-                JSONObject entry = new JSONObject();
-                entry.put("timestamp", timestamp);
-                entry.put("text", text);
-                jsonArray.put(entry);
-
-                byte[] uploadBytes = jsonArray.toString(2).getBytes(StandardCharsets.UTF_8);
-                Task<UploadTask.TaskSnapshot> uploadTask = fileRef.putBytes(uploadBytes);
-                Tasks.await(uploadTask);
-                Log.i(DEBUG_TAG, "[Firebase] Successfully saved spoken text to " + dateFolder + "/data.json");
-            } catch (Exception e) {
-                Log.e(DEBUG_TAG, "[Firebase] Failed to save spoken text to Firebase Storage", e);
+            firebaseLog('E', "Failed to save spoken text to " + FIREBASE_DATA_FILE_NAME
+                    + " after " + FIREBASE_MAX_ATTEMPTS + " attempts");
+            if (lastError != null) {
                 try {
-                    FirebaseCrashlytics.getInstance().recordException(e);
+                    FirebaseCrashlytics.getInstance().recordException(lastError);
                 } catch (Exception ignored) {}
             }
-        });
+        } catch (Exception e) {
+            firebaseLog('E', "Failed to save spoken text to Firebase Storage: " + e);
+            try {
+                FirebaseCrashlytics.getInstance().recordException(e);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * Download the current record list of data.json, accepting both the canonical
+     * {schema_version, data:[...]} document and the legacy top-level array written
+     * by older builds. A missing or unparsable file simply starts a new index.
+     */
+    private JSONArray loadDataJsonEntries(StorageReference fileRef) {
+        JSONArray entries = new JSONArray();
+
+        try {
+            Task<byte[]> downloadTask = fileRef.getBytes(FIREBASE_MAX_JSON_BYTES);
+            byte[] bytes = Tasks.await(downloadTask, FIREBASE_OPERATION_TIMEOUT_S, TimeUnit.SECONDS);
+            if (bytes == null) return entries;
+
+            String jsonStr = new String(bytes, StandardCharsets.UTF_8).trim();
+            if (jsonStr.isEmpty()) return entries;
+
+            if (jsonStr.startsWith("{")) {
+                JSONObject document = new JSONObject(jsonStr);
+                JSONArray data = document.optJSONArray("data");
+                if (data == null) data = document.optJSONArray("entries");
+                if (data != null) entries = data;
+            } else if (jsonStr.startsWith("[")) {
+                entries = new JSONArray(jsonStr);
+            }
+        } catch (Exception e) {
+            // File not created yet (or not readable): start from an empty index.
+            firebaseLog('I', "No readable " + FIREBASE_DATA_FILE_NAME + " yet, starting a new index: " + e);
+            entries = new JSONArray();
+        }
+
+        return entries;
+    }
+
+    /**
+     * Bring the records already stored in data.json up to schema v1.2.2: records
+     * written by older builds of this app only carried "timestamp" and "text", so
+     * those keys are renamed to entry_timestamp / inference_transcript and the
+     * missing fields are filled with their default value. Records that are already
+     * conformant are left untouched.
+     */
+    private void normalizeEntriesToSchema(JSONArray entries) {
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject entry = entries.optJSONObject(i);
+            if (entry == null) continue;
+
+            // legacy {timestamp, text} records written by previous versions
+            if (!entry.has("inference_transcript") && entry.has("text")) {
+                try {
+                    entry.put("inference_transcript", entry.opt("text"));
+                } catch (JSONException ignored) {}
+                entry.remove("text");
+            }
+            if (!entry.has("entry_timestamp") && entry.has("timestamp")) {
+                try {
+                    entry.put("entry_timestamp", toIso8601Utc(entry.optString("timestamp", "")));
+                } catch (JSONException ignored) {}
+                entry.remove("timestamp");
+            }
+
+            ensureField(entry, "entry_id", UUID.randomUUID().toString());
+            ensureField(entry, "entry_timestamp", nowIso8601Utc());
+            ensureField(entry, "audio_data", SCHEMA_NOT_APPLICABLE);
+            ensureField(entry, "audio_duration", SCHEMA_NOT_APPLICABLE);
+            ensureField(entry, "audio_source", SCHEMA_NOT_APPLICABLE);
+            ensureField(entry, "inference_transcript", "");
+            ensureField(entry, "inference_confidence", SCHEMA_NOT_APPLICABLE);
+            ensureField(entry, "inference_model", SCHEMA_NOT_APPLICABLE);
+            ensureField(entry, "user_is_validated", SCHEMA_NOT_APPLICABLE);
+            ensureField(entry, "user_transcript_processed", SCHEMA_NOT_APPLICABLE);
+            // A record reviewed in Curate keeps its flag: it is only defaulted to
+            // false when missing, which is what a freshly stored record looks like.
+            ensureField(entry, "reviewer_is_reviewed", false);
+            ensureField(entry, "reviewer_transcript_corrected", SCHEMA_NOT_APPLICABLE);
+        }
+    }
+
+    /** Add a key only when it is missing or explicitly null. */
+    private static void ensureField(JSONObject entry, String key, Object value) {
+        try {
+            if (!entry.has(key) || entry.isNull(key)) entry.put(key, value);
+        } catch (JSONException ignored) {}
+    }
+
+    /** Current time as ISO 8601 UTC, e.g. 2026-11-21T17:45:03.128Z. */
+    private static String nowIso8601Utc() {
+        return isoUtcFormat().format(new Date());
+    }
+
+    /** A fresh SimpleDateFormat: SimpleDateFormat is not thread safe. */
+    private static SimpleDateFormat isoUtcFormat() {
+        SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+        format.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return format;
+    }
+
+    /**
+     * Convert a timestamp written by a previous version of this app into ISO 8601
+     * UTC. Timestamps in an unknown format are returned unchanged rather than lost.
+     */
+    private static String toIso8601Utc(String timestamp) {
+        if (timestamp == null || timestamp.trim().isEmpty()) return nowIso8601Utc();
+
+        String value = timestamp.trim();
+        String[] legacyPatterns = {
+                "yyyy-MM-dd HH:mm:ss.SSS",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy.MM.dd HH:mm",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                "yyyy-MM-dd'T'HH:mm:ss'Z'"
+        };
+
+        for (String pattern : legacyPatterns) {
+            SimpleDateFormat format = new SimpleDateFormat(pattern, Locale.US);
+            format.setTimeZone(pattern.contains("'Z'")
+                    ? TimeZone.getTimeZone("UTC")
+                    : TimeZone.getDefault());
+            try {
+                Date parsed = format.parse(value);
+                if (parsed != null) return isoUtcFormat().format(parsed);
+            } catch (ParseException ignored) {}
+        }
+
+        return value;
+    }
+
+    /** Log to logcat and, when the service is connected, to the MyLog file. */
+    private void firebaseLog(char level, String message) {
+        String prefixed = "[Firebase] " + message;
+        MyLog logger = my_log;
+
+        switch (level) {
+            case 'W':
+                Log.w(DEBUG_TAG, prefixed);
+                if (logger != null) logger.w(DEBUG_TAG, prefixed);
+                break;
+            case 'E':
+                Log.e(DEBUG_TAG, prefixed);
+                if (logger != null) logger.e(DEBUG_TAG, prefixed);
+                break;
+            default:
+                Log.i(DEBUG_TAG, prefixed);
+                if (logger != null) logger.i(DEBUG_TAG, prefixed);
+                break;
+        }
     }
 
     // MyLog class
@@ -459,6 +844,12 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
                         @Override
                         public void onDone(String utteranceId) {
+                            // The engine spoke this utterance to the end: store its text now.
+                            // Interruptions never reach onDone() - tts.stop() cancels the queue -
+                            // and the session check in commitSpokenTextToFirebase covers engines
+                            // that do fire a late onDone() for a stopped utterance.
+                            commitSpokenTextToFirebase(utteranceId);
+
                             new Handler(Looper.getMainLooper()).postDelayed(() -> {
                                 Integer session = utteranceSessions.get(utteranceId);
                                 if (session != null && session == speechSession &&
@@ -466,6 +857,18 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                                     finishSpeechOverlay(true);
                                 }
                             }, 100);
+                        }
+
+                        @Override
+                        public void onStop(String utteranceId, boolean interrupted) {
+                            // Stopped mid-synthesis (interrupted=true) or flushed from the
+                            // queue before starting (interrupted=false): in both cases the
+                            // text was not spoken to the end, so it must not be stored.
+                            PendingText dropped = pendingFirebaseTexts.remove(utteranceId);
+                            if (dropped != null) {
+                                Log.i(DEBUG_TAG, "[Firebase] Utterance " + utteranceId + " "
+                                        + (interrupted ? "interrupted" : "flushed") + ": text not saved");
+                            }
                         }
 
                         @Override
@@ -509,6 +912,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     @Override
     public void onDestroy() {
         super.onDestroy();
+        discardUnspokenTexts();
         shutdownTts();
         try {
             unregisterReceiver(screenshotReceiver);
@@ -677,6 +1081,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             public void onClick(View view) {
                 Log.i(DEBUG_TAG, "[configureButtons::button_stop::onClick] Pressed 'Stop'");
                 if (tts != null && tts.isSpeaking()) {
+                    discardUnspokenTexts();
                     tts.stop();
                     setButtonSpeaking(false);
                 }
@@ -738,11 +1143,18 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) { }
 
-    @Override public void onInterrupt() { }
+    @Override public void onInterrupt() {
+        // The system interrupted the service: any text still queued was not spoken.
+        discardUnspokenTexts();
+    }
 
     @Override public boolean onTouch(View v, MotionEvent event) {
         if (speech_active) {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                // The user tapped anywhere while the engine was speaking: the texts
+                // that had not been spoken yet must not reach Firebase, so flag the
+                // interruption before stopping the engine.
+                discardUnspokenTexts();
                 if (tts != null) tts.stop();
                 finishSpeechOverlay(false);
             }
@@ -754,6 +1166,14 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     }
 
     private void finishSpeechOverlay(boolean showReplay) {
+        if (showReplay) {
+            // The engine read the whole selection: store it, all at once.
+            flushSpokenTexts();
+        } else {
+            // Closed early (user tap or engine error): nothing unspoken may be stored.
+            discardUnspokenTexts();
+        }
+
         speech_active = false;
         spokenWords.clear();
         utteranceSessions.clear();
@@ -786,12 +1206,16 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     private void replayLastSpeech() {
         if (tts == null || lastSpokenItems.isEmpty()) return;
 
+        // A replay is not a new interaction: nothing spoken here is queued for
+        // Firebase, and it cancels whatever was still pending from the selection.
+        discardUnspokenTexts();
         tts.stop();
         spokenWords.clear();
         utteranceSessions.clear();
         speech_active = true;
         replaying_speech = true;
         speechSession++;
+        interruptedSpeechSession = -1;
         setReplayButtonSpeaking(true);
         setOverlayProperties(true);
         image_view.setClickable(true);
@@ -939,7 +1363,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     
                     speech_active = true;
                     replaying_speech = false;
-                    speechSession++;
+                    startNewSpeechSession();
 
                     if (latest_screenshot_bitmap != null) {
                         try {
@@ -1260,6 +1684,11 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     }
                     utteranceSessions.put(utteranceId, speechSession);
                     lastSpokenItems.add(new ReplayItem(current_string, words));
+                    // Queue the text before handing it to the engine: the whole selection
+                    // is uploaded only if the engine reads every block to the end.
+                    // Status messages and replays go through speakText() too, but they
+                    // are never queued.
+                    queueSpokenTextForFirebase(utteranceId, current_string);
                     speakText(current_string, TextToSpeech.QUEUE_ADD, null, utteranceId);
                     Log.i(DEBUG_TAG, "[bitmapToSpeech] Text: " + current_string);
                 }
@@ -1333,6 +1762,22 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         ReplayItem(String text, List<SpokenWord> words) {
             this.text = text;
             this.words = words;
+        }
+    }
+
+    /** An OCR'd text waiting for the engine to confirm it has been spoken entirely. */
+    private static class PendingText {
+        final String text;
+        final int session;
+        final int order;
+        final String timestamp;
+        volatile boolean spoken = false;
+
+        PendingText(String text, int session, int order, String timestamp) {
+            this.text = text;
+            this.session = session;
+            this.order = order;
+            this.timestamp = timestamp;
         }
     }
 }
