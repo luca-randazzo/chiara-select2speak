@@ -21,6 +21,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -130,8 +131,14 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     // TextRecognizer
     TextRecognizer text_recognizer;
 
-    // TextToSpeech engine
+    // TextToSpeech engine: it is always the one the user selected in the Android
+    // system settings (Settings -> Language & input -> Text-to-speech output).
+    // No engine package name and no language are ever hardcoded in this app.
     private TextToSpeech tts;
+    private TextToSpeech.OnInitListener ttsInitListener;
+    // Locale that was active when the current TextToSpeech instance was created,
+    // used only to notice when the system language changes.
+    private Locale lastTtsLocale;
     boolean remove_newlines = true;
     private final Map<String, List<SpokenWord>> spokenWords = new HashMap<>();
     private final Map<String, Integer> utteranceSessions = new HashMap<>();
@@ -147,6 +154,101 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             tts.speak(text, queueMode, params, utteranceId);
             saveSpokenTextToFirebase(text.toString());
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Text To Speech
+    // ---------------------------------------------------------------
+    // Engine and language are entirely delegated to the Android system, i.e. to
+    // Settings -> System -> Language & input -> Text-to-speech output:
+    //   * no engine package is given to the TextToSpeech constructor, so the
+    //     engine marked as "preferred" in the system is the one that speaks;
+    //   * setLanguage() / setVoice() are never called, so the engine keeps its
+    //     own default language and voice, which follow the system settings.
+    // ---------------------------------------------------------------
+
+    /** The locale the user selected in the Android system settings. */
+    @NonNull
+    private Locale currentSystemLocale() {
+        return localeOf(getResources().getConfiguration());
+    }
+
+    @NonNull
+    private static Locale localeOf(@NonNull Configuration configuration) {
+        android.os.LocaleList locales = configuration.getLocales();
+        return locales.isEmpty() ? Locale.getDefault() : locales.get(0);
+    }
+
+    /**
+     * Creates the TextToSpeech instance using the engine preferred in the system
+     * settings. The engine resolves its default language when the object is
+     * created, which is why a change of the system language requires a new
+     * instance (see restartTtsIfLocaleChanged) instead of setLanguage().
+     */
+    private void createTts() {
+        if (ttsInitListener == null) return;
+
+        lastTtsLocale = currentSystemLocale();
+        tts = new TextToSpeech(this.getApplicationContext(), ttsInitListener);
+    }
+
+    private void shutdownTts() {
+        if (tts == null) return;
+
+        try {
+            tts.stop();
+            tts.shutdown();
+        } catch (Exception e) {
+            Log.w(DEBUG_TAG, "[TTS] Error shutting down the Text to speech engine", e);
+        }
+        tts = null;
+    }
+
+    /**
+     * Logs the engine and the language the system handed us over. Purely
+     * diagnostic: it never overrides the system configuration.
+     */
+    @SuppressWarnings("deprecation")
+    private void logSystemTtsSettings() {
+        if (tts == null) return;
+
+        try {
+            String engine = tts.getDefaultEngine();
+            String engineLabel = null;
+
+            List<TextToSpeech.EngineInfo> engines = tts.getEngines();
+            if (engines != null) {
+                for (TextToSpeech.EngineInfo info : engines) {
+                    if (info != null && info.name != null && info.name.equals(engine)) {
+                        engineLabel = info.label;
+                        break;
+                    }
+                }
+            }
+
+            String message = "[TTS] System engine: " + (engineLabel != null ? engineLabel : engine)
+                    + ", system language: " + tts.getLanguage();
+            Log.i(DEBUG_TAG, message);
+            my_log.i(DEBUG_TAG, message);
+        } catch (Exception e) {
+            Log.w(DEBUG_TAG, "[TTS] Unable to read the system Text to speech settings", e);
+        }
+    }
+
+    /**
+     * The language is owned by the engine, so when the user changes the system
+     * language the only way to follow it - without hardcoding any locale here -
+     * is to let the engine resolve its defaults again.
+     */
+    private void restartTtsIfLocaleChanged(@NonNull Configuration newConfig) {
+        Locale systemLocale = localeOf(newConfig);
+        if (systemLocale.equals(lastTtsLocale)) return;
+
+        Log.i(DEBUG_TAG, "[TTS] System language changed from " + lastTtsLocale
+                + " to " + systemLocale + ", recreating the TextToSpeech instance");
+
+        shutdownTts();
+        createTts();
     }
 
     private void saveSpokenTextToFirebase(String text) {
@@ -318,15 +420,17 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         // ---------------------------------------------------------------
         // Setup TTS
         // ---------------------------------------------------------------
-        // Set up the Text To Speech engine.
-        TextToSpeech.OnInitListener listener = new TextToSpeech.OnInitListener() {
+        // Set up the Text To Speech engine (system engine, system language).
+        ttsInitListener = new TextToSpeech.OnInitListener() {
             @Override
             public void onInit(final int status) {
                 if (status == TextToSpeech.SUCCESS) {
                     Log.i(DEBUG_TAG, "[onServiceConnected] Text to speech engine started successfully");
                     my_log.i(DEBUG_TAG, "[onServiceConnected] Text to speech engine started successfully");
 
-                    tts.setLanguage(Locale.ITALIAN);
+                    if (tts == null) return;
+
+                    logSystemTtsSettings();
 
                     tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                         @Override
@@ -381,7 +485,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 }
             }
         };
-        tts = new TextToSpeech(this.getApplicationContext(), listener);
+        createTts();
 
 
         // ---------------------------------------------------------------
@@ -405,12 +509,19 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     @Override
     public void onDestroy() {
         super.onDestroy();
+        shutdownTts();
         try {
             unregisterReceiver(screenshotReceiver);
         } catch (Exception ignored) {}
         try {
             firebaseExecutor.shutdown();
         } catch (Exception ignored) {}
+    }
+
+    @Override
+    public void onConfigurationChanged(@NonNull Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        restartTtsIfLocaleChanged(newConfig);
     }
 
     private void onScreenshotReady() {
@@ -565,7 +676,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             @Override
             public void onClick(View view) {
                 Log.i(DEBUG_TAG, "[configureButtons::button_stop::onClick] Pressed 'Stop'");
-                if (tts.isSpeaking()) {
+                if (tts != null && tts.isSpeaking()) {
                     tts.stop();
                     setButtonSpeaking(false);
                 }
@@ -632,7 +743,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     @Override public boolean onTouch(View v, MotionEvent event) {
         if (speech_active) {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                tts.stop();
+                if (tts != null) tts.stop();
                 finishSpeechOverlay(false);
             }
             return true;
