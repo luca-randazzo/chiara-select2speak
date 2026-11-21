@@ -35,4 +35,7 @@
     <string name="open_accessibility_settings">Open Accessibility Settings</string>
     <string name="media_volume_description">To hear the output of this app, the Android \"Media\" volume must be &gt; 0</string>
     <string name="open_volume_settings">Open Volume Settings</string>
+
+    <string name="test_crash_description">Force a test crash to verify Firebase Crashlytics integration</string>
+    <string name="test_crash">Test Crash</string>
 </resources>

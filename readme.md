@@ -26,3 +26,43 @@ This service is inspired by the [Android Select to Speak](https://support.google
 The service was successfully tested under:
 - Galaxy Tab A (2016) [SM-T585]
 - Android: 8.10 (Oreo) [API level: 27]
+
+# Setup
+## 1. Configure Firebase and Android 
+To enable storing crashes to Firebase Analytics & Crashlytics, follow these instructions 
+
+### 1.1. Obtain `google-services.json`
+To connect this app to your Firebase project and enable crash reporting and analytics:
+1. Go to the [Firebase Console](https://console.firebase.google.com/).
+2. Create a new project or select your existing project.
+3. In your project overview, click the **Add app** button (or **Android** icon) to add an Android app.
+4. Enter the Android package name:
+   * **Package name**: `com.chiara.accessibilityservices`
+   * *(Optional)* App nickname and Debug signing certificate SHA-1.
+5. Click **Register app**.
+6. Download the **`google-services.json`** configuration file.
+
+## 1.2. Install `google-services.json`
+Once downloaded, place the `google-services.json` file directly into your Android app module directory:
+
+```text
+android-project/
+├── app/
+│   ├── google-services.json   <-- Place your downloaded file here!
+│   ├── build.gradle
+│   └── src/
+├── build.gradle
+└── README.md
+```
+
+### 1.3. Verifying Firebase Crashlytics installation
+This app includes built-in test crash handling to verify your Firebase Crashlytics setup:
+
+1. Build and install the app on your Android device or tablet:
+   ```bash
+   ./gradlew app:assembleDebug
+   ```
+2. Open the app and navigate to the **Settings** screen.
+3. Tap the **Test Crash** button. This will force a test exception and crash the app.
+4. **Re-open the app** once. The Firebase SDK will automatically upload the crash report in the background.
+5. Open your [Firebase Console](https://console.firebase.google.com/) -> **Crashlytics** dashboard to view the test crash report and device stack traces.

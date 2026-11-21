@@ -56,6 +56,7 @@ import androidx.core.content.ContextCompat;
 import com.google.android.gms.vision.Frame;
 import com.google.android.gms.vision.text.TextBlock;
 import com.google.android.gms.vision.text.TextRecognizer;
+import com.google.firebase.crashlytics.FirebaseCrashlytics;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -164,11 +165,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
 
         // Register receiver for screenshot ready signal (fallback for older Android versions)
         IntentFilter filter = new IntentFilter("com.chiara.accessibilityservices.SCREENSHOT_READY");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(screenshotReceiver, filter, Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(screenshotReceiver, filter);
-        }
+        ContextCompat.registerReceiver(this, screenshotReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
 
         // ---------------------------------------------------------------
         // Say hello :)
@@ -210,11 +207,10 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         // ---------------------------------------------------------------
         // Setup Layout and GUI
         // ---------------------------------------------------------------
-        // create layout and set Overlay properties
+        // create layout
         mLayout = new FrameLayout(this);
-        setOverlayProperties(false);
 
-        // setup the buttons
+        // setup the buttons first so views exist before setting overlay properties
         LayoutInflater inflater = LayoutInflater.from(MainService.this);
         inflater.inflate(R.layout.ui, mLayout);
         // hide stop button
@@ -228,6 +224,9 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         image_view.setVisibility(View.GONE);
         Log.i(DEBUG_TAG, "[onServiceConnected] Images setup");
         my_log.i(DEBUG_TAG, "[onServiceConnected] Images setup");
+
+        // now set overlay properties
+        setOverlayProperties(false);
 
         // configure buttons
         configureButtons();
@@ -662,7 +661,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             lp.width    = WindowManager.LayoutParams.MATCH_PARENT;
             lp.x = 0;
             lp.y = 0;
-            if (button_start != null) {
+            if (button_start != null && buttonParams != null) {
                 buttonParams.leftMargin = lastX + buttonMarginX;
                 buttonParams.topMargin = lastY + buttonMarginY;
                 button_start.setLayoutParams(buttonParams);
@@ -674,7 +673,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             lp.height   = (int) (110 * density);
             lp.x = lastX;
             lp.y = lastY;
-            if (button_start != null) {
+            if (button_start != null && buttonParams != null) {
                 buttonParams.leftMargin = buttonMarginX;
                 buttonParams.topMargin = buttonMarginY;
                 button_start.setLayoutParams(buttonParams);
@@ -761,6 +760,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                             bitmapToSpeech(screenshot_bitmap_resized);
                         } catch (Exception e) {
                             Log.e(DEBUG_TAG, "Error resizing or processing bitmap: " + e.getMessage());
+                            FirebaseCrashlytics.getInstance().recordException(e);
                             tts.speak("Errore elaborazione", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
                         }
                     }
@@ -900,6 +900,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             }
         } catch (Exception e) {
             Log.e(DEBUG_TAG, "Error in findOcrBoundsAtPosition: " + e.getMessage());
+            FirebaseCrashlytics.getInstance().recordException(e);
         }
 
         return null;
@@ -957,6 +958,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                         }
                     } catch (Exception e) {
                         Log.e(DEBUG_TAG, "Error processing native screenshot: " + e.getMessage());
+                        FirebaseCrashlytics.getInstance().recordException(e);
                     } finally {
                         if (screenshotResult.getHardwareBuffer() != null) {
                             screenshotResult.getHardwareBuffer().close();
@@ -967,6 +969,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                 @Override
                 public void onFailure(int errorCode) {
                     Log.e(DEBUG_TAG, "Native screenshot failed with error code: " + errorCode);
+                    FirebaseCrashlytics.getInstance().log("Native screenshot failed with error code: " + errorCode);
                     // Fallback to MediaProjection for modern devices if native fails
                     takeScreenshotFallback();
                 }
@@ -983,10 +986,20 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             serviceIntent.putExtra(MediaProjectionService.EXTRA_RESULT_CODE, mProjectionResultCode);
             serviceIntent.putExtra(MediaProjectionService.EXTRA_DATA, mProjectionData);
             
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent);
-            } else {
-                startService(serviceIntent);
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent);
+                } else {
+                    startService(serviceIntent);
+                }
+            } catch (Exception e) {
+                Log.e(DEBUG_TAG, "Failed to start MediaProjectionService directly: " + e.getMessage());
+                FirebaseCrashlytics.getInstance().recordException(e);
+                mProjectionData = null;
+                mProjectionResultCode = Activity.RESULT_CANCELED;
+                Intent dialogIntent = new Intent(this, ScreenshotActivity.class);
+                dialogIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(dialogIntent);
             }
         } else {
             Log.i(DEBUG_TAG, "Taking screenshot using MediaProjection fallback (asking permission)");
@@ -1161,6 +1174,9 @@ class MyLog {
         log(tag, "E", msg);
     }
     private void log(String tag, String level, String msg) {
+        try {
+            FirebaseCrashlytics.getInstance().log(level + "/" + tag + ": " + msg);
+        } catch (Exception ignored) {}
         try {
             if (log_file_writer == null) return;
             log_file_writer.append(dateFormat.format(new Date())).append(" ").append(level).append("/").append(tag).append(": ").append(msg).append("\n");

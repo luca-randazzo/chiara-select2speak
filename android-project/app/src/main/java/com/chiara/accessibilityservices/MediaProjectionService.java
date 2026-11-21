@@ -29,6 +29,8 @@ import android.view.WindowManager;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
+import com.google.firebase.crashlytics.FirebaseCrashlytics;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -56,6 +58,7 @@ public class MediaProjectionService extends Service {
         mHandlerThread.start();
         mHandler = new Handler(mHandlerThread.getLooper());
         mProjectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        FirebaseCrashlytics.getInstance().log("MediaProjectionService created");
     }
 
     @Override
@@ -69,11 +72,20 @@ public class MediaProjectionService extends Service {
                 .setOngoing(true)
                 .build();
 
-        // Android 14+ requires starting foreground BEFORE getting the projection
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        try {
+            // Android 14+ requires starting foreground BEFORE getting the projection
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+        } catch (Exception e) {
+            Log.e(DEBUG_TAG, "Failed to start foreground service for MediaProjection: " + e.getMessage());
+            FirebaseCrashlytics.getInstance().recordException(e);
+            MainService.mProjectionData = null;
+            MainService.mProjectionResultCode = Activity.RESULT_CANCELED;
+            stopSelf();
+            return START_NOT_STICKY;
         }
 
         if (intent != null && intent.hasExtra(EXTRA_RESULT_CODE)) {
@@ -92,10 +104,12 @@ public class MediaProjectionService extends Service {
                         mHandler.post(this::startProjection);
                     } else {
                         Log.e(DEBUG_TAG, "Failed to get MediaProjection");
+                        FirebaseCrashlytics.getInstance().log("Failed to get MediaProjection (null)");
                         stopSelf();
                     }
                 } catch (SecurityException e) {
                     Log.e(DEBUG_TAG, "SecurityException while getting projection: " + e.getMessage());
+                    FirebaseCrashlytics.getInstance().recordException(e);
                     // Clear the cached permission as it is no longer valid
                     MainService.mProjectionData = null;
                     MainService.mProjectionResultCode = Activity.RESULT_CANCELED;
@@ -138,6 +152,7 @@ public class MediaProjectionService extends Service {
 
         } catch (Exception e) {
             Log.e(DEBUG_TAG, "Error starting projection: " + e.getMessage());
+            FirebaseCrashlytics.getInstance().recordException(e);
             stopSelf();
         }
     }
@@ -241,6 +256,7 @@ public class MediaProjectionService extends Service {
                 }
             } catch (Exception e) {
                 Log.e(DEBUG_TAG, "Error in onImageAvailable: " + e.getMessage());
+                FirebaseCrashlytics.getInstance().recordException(e);
             } finally {
                 if (fos != null) try { fos.close(); } catch (IOException ignored) {}
                 if (croppedBitmap != null) croppedBitmap.recycle();
