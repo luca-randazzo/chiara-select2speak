@@ -56,11 +56,22 @@ import androidx.core.content.ContextCompat;
 import com.google.android.gms.vision.Frame;
 import com.google.android.gms.vision.text.TextBlock;
 import com.google.android.gms.vision.text.TextRecognizer;
+import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.crashlytics.FirebaseCrashlytics;
+import com.google.firebase.storage.FirebaseStorage;
+import com.google.firebase.storage.StorageReference;
+import com.google.firebase.storage.UploadTask;
+import com.google.android.gms.tasks.Task;
+import com.google.android.gms.tasks.Tasks;
+import com.chiara.accessibilityservices.BuildConfig;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -68,6 +79,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /* This service provides an entry point to the Chiara_Select2Speak service. */
 public class MainService extends AccessibilityService implements View.OnTouchListener {
@@ -126,6 +139,66 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
     private int utteranceCounter = 0;
     private int speechSession = 0;
     private Paint highlightPaint;
+
+    private final ExecutorService firebaseExecutor = Executors.newSingleThreadExecutor();
+
+    private void speakText(CharSequence text, int queueMode, android.os.Bundle params, String utteranceId) {
+        if (tts != null && text != null && text.length() > 0) {
+            tts.speak(text, queueMode, params, utteranceId);
+            saveSpokenTextToFirebase(text.toString());
+        }
+    }
+
+    private void saveSpokenTextToFirebase(String text) {
+        if (text == null || text.trim().isEmpty()) return;
+        firebaseExecutor.execute(() -> {
+            try {
+                FirebaseAuth auth = FirebaseAuth.getInstance();
+                if (auth.getCurrentUser() == null) {
+                    Log.w(DEBUG_TAG, "[Firebase] User is not authenticated. Please sign in via Settings.");
+                    return;
+                }
+
+                SimpleDateFormat sdfDate = new SimpleDateFormat("yyyyMMdd", Locale.US);
+                String dateFolder = sdfDate.format(new Date()) + "_select2speak";
+
+                SimpleDateFormat sdfTimestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
+                String timestamp = sdfTimestamp.format(new Date());
+
+                // Uses the storage bucket declared in google-services.json
+                FirebaseStorage storage = FirebaseStorage.getInstance();
+                StorageReference folderRef = storage.getReference().child(dateFolder);
+                StorageReference fileRef = folderRef.child("data.json");
+
+                JSONArray jsonArray;
+                final long ONE_MEGABYTE = 1024 * 1024;
+
+                try {
+                    Task<byte[]> downloadTask = fileRef.getBytes(ONE_MEGABYTE);
+                    byte[] bytes = Tasks.await(downloadTask);
+                    String jsonStr = new String(bytes, StandardCharsets.UTF_8);
+                    jsonArray = new JSONArray(jsonStr);
+                } catch (Exception e) {
+                    jsonArray = new JSONArray();
+                }
+
+                JSONObject entry = new JSONObject();
+                entry.put("timestamp", timestamp);
+                entry.put("text", text);
+                jsonArray.put(entry);
+
+                byte[] uploadBytes = jsonArray.toString(2).getBytes(StandardCharsets.UTF_8);
+                Task<UploadTask.TaskSnapshot> uploadTask = fileRef.putBytes(uploadBytes);
+                Tasks.await(uploadTask);
+                Log.i(DEBUG_TAG, "[Firebase] Successfully saved spoken text to " + dateFolder + "/data.json");
+            } catch (Exception e) {
+                Log.e(DEBUG_TAG, "[Firebase] Failed to save spoken text to Firebase Storage", e);
+                try {
+                    FirebaseCrashlytics.getInstance().recordException(e);
+                } catch (Exception ignored) {}
+            }
+        });
+    }
 
     // MyLog class
     MyLog my_log;
@@ -323,7 +396,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    tts.speak(tts_welcome_message, TextToSpeech.QUEUE_ADD, null, "DEFAULT");
+                    speakText(tts_welcome_message, TextToSpeech.QUEUE_ADD, null, "DEFAULT");
                 }
             }, 1000);
         }
@@ -334,6 +407,9 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         super.onDestroy();
         try {
             unregisterReceiver(screenshotReceiver);
+        } catch (Exception ignored) {}
+        try {
+            firebaseExecutor.shutdown();
         } catch (Exception ignored) {}
     }
 
@@ -615,7 +691,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
             String utteranceId = "ocr-replay-" + utteranceCounter++;
             spokenWords.put(utteranceId, item.words);
             utteranceSessions.put(utteranceId, speechSession);
-            tts.speak(item.text, TextToSpeech.QUEUE_ADD, null, utteranceId);
+            speakText(item.text, TextToSpeech.QUEUE_ADD, null, utteranceId);
         }
     }
 
@@ -761,12 +837,12 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                         } catch (Exception e) {
                             Log.e(DEBUG_TAG, "Error resizing or processing bitmap: " + e.getMessage());
                             FirebaseCrashlytics.getInstance().recordException(e);
-                            tts.speak("Errore elaborazione", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
+                            speakText("Errore elaborazione", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
                         }
                     }
                     else {
                         Log.e(DEBUG_TAG, "[processMotionEvent] null bitmap");
-                        tts.speak("Nessuno screenshot caricato", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
+                        speakText("Nessuno screenshot caricato", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
                     }
                     setupServiceStatus(false);
                     setOverlayProperties(true);
@@ -954,7 +1030,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                             onScreenshotReady();
                         } else {
                             Log.e(DEBUG_TAG, "Failed to wrap hardware buffer");
-                            tts.speak("Errore cattura", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
+                            speakText("Errore cattura", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
                         }
                     } catch (Exception e) {
                         Log.e(DEBUG_TAG, "Error processing native screenshot: " + e.getMessage());
@@ -1073,7 +1149,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
                     }
                     utteranceSessions.put(utteranceId, speechSession);
                     lastSpokenItems.add(new ReplayItem(current_string, words));
-                    tts.speak(current_string, TextToSpeech.QUEUE_ADD, null, utteranceId);
+                    speakText(current_string, TextToSpeech.QUEUE_ADD, null, utteranceId);
                     Log.i(DEBUG_TAG, "[bitmapToSpeech] Text: " + current_string);
                 }
             }
@@ -1081,7 +1157,7 @@ public class MainService extends AccessibilityService implements View.OnTouchLis
         }
         else {
             Log.w(DEBUG_TAG, "[bitmapToSpeech] No text found");
-            tts.speak("Nessun testo trovato", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
+            speakText("Nessun testo trovato", TextToSpeech.QUEUE_ADD, null, "DEFAULT");
             return ERROR;
         }
     }

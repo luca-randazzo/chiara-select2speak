@@ -38,4 +38,11 @@
 
     <string name="test_crash_description">Force a test crash to verify Firebase Crashlytics integration</string>
     <string name="test_crash">Test Crash</string>
+    <string name="google_sign_in">Sign in with Google</string>
+    <string name="google_sign_out">Sign out</string>
+    <string name="auth_status_not_signed_in">Not signed in. Sign in to save the spoken text to the cloud.</string>
+    <string name="auth_status_signed_in">Signed in as: %s</string>
+    <string name="google_sign_in_success">Signed in successfully</string>
+    <string name="google_sign_in_failed">Sign-in failed: %s</string>
+    <string name="google_sign_out_success">Signed out</string>
 </resources>

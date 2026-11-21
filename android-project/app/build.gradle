@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace 'com.chiara.accessibilityservices'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.chiara.accessibilityservices"
@@ -16,6 +16,10 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {
@@ -40,6 +44,8 @@ dependencies {
     implementation platform('com.google.firebase:firebase-bom:35.2.0')
     implementation 'com.google.firebase:firebase-crashlytics'
     implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.google.firebase:firebase-storage'
+    implementation 'com.google.firebase:firebase-auth'
 
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'

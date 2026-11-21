@@ -72,6 +72,32 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="24dp">
+
+        <TextView
+            android:id="@+id/tv_auth_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:text="@string/auth_status_not_signed_in" />
+
+        <Button
+            android:id="@+id/btn_google_sign_in"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:minHeight="64dp"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="@string/google_sign_in" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
         android:gravity="center_vertical">
 
         <TextView
